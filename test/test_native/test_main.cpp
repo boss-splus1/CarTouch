@@ -14,6 +14,7 @@
 #include "ct_buttons.h"
 #include "ct_json_validation.h"
 #include "ct_battery.h"
+#include "ct_obd_validity.h"
 #include "ct_can_config.h"
 #include "ct_storage_guard.h"
 #include "ct_can_record.h"
@@ -864,6 +865,33 @@ void test_ota_header_collects_across_small_chunks() {
     TEST_ASSERT_EQUAL(CT_OTA_HDR_NEED_MORE, ctOtaHeaderFeed(st, NULL, 0, 4u * 1048576u));
 }
 
+void test_obd_value_never_answered_is_not_valid(void) {
+    TEST_ASSERT_FALSE(ctObdValueFresh(false, 0, 1000, CT_OBD_STALE_MS));
+    TEST_ASSERT_FALSE(ctObdValueFresh(false, 999, 1000, CT_OBD_STALE_MS));
+}
+
+void test_obd_value_goes_stale_after_limit(void) {
+    TEST_ASSERT_TRUE(ctObdValueFresh(true, 1000, 1000, CT_OBD_STALE_MS));
+    TEST_ASSERT_TRUE(ctObdValueFresh(true, 1000, 1000 + CT_OBD_STALE_MS, CT_OBD_STALE_MS));
+    TEST_ASSERT_FALSE(ctObdValueFresh(true, 1000, 1001 + CT_OBD_STALE_MS, CT_OBD_STALE_MS));
+}
+
+void test_obd_value_freshness_survives_millis_wraparound(void) {
+    const uint32_t last = 0xFFFFFF00u;    // 256 ms before the counter wraps
+    TEST_ASSERT_TRUE(ctObdValueFresh(true, last, 0x00000100u, CT_OBD_STALE_MS));
+    TEST_ASSERT_FALSE(ctObdValueFresh(true, last, 0x00002000u, CT_OBD_STALE_MS));
+}
+
+void test_obd_validity_mask_bits_are_independent(void) {
+    const uint8_t mask = CT_VD_RPM | CT_VD_BATTERY;
+    TEST_ASSERT_TRUE(ctVdValid(mask, CT_VD_RPM));
+    TEST_ASSERT_TRUE(ctVdValid(mask, CT_VD_BATTERY));
+    TEST_ASSERT_FALSE(ctVdValid(mask, CT_VD_SPEED));
+    TEST_ASSERT_FALSE(ctVdValid(mask, CT_VD_COOLANT));
+    TEST_ASSERT_FALSE(ctVdValid(mask, CT_VD_FUEL));
+    TEST_ASSERT_FALSE(ctVdValid(0, CT_VD_RPM));
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_tx_guard_listen_only);
@@ -926,5 +954,9 @@ int main(int, char**) {
     RUN_TEST(test_ota_header_accepts_matching_image);
     RUN_TEST(test_ota_header_rejects_flash_chip_and_magic);
     RUN_TEST(test_ota_header_collects_across_small_chunks);
+    RUN_TEST(test_obd_value_never_answered_is_not_valid);
+    RUN_TEST(test_obd_value_goes_stale_after_limit);
+    RUN_TEST(test_obd_value_freshness_survives_millis_wraparound);
+    RUN_TEST(test_obd_validity_mask_bits_are_independent);
     return UNITY_END();
 }
