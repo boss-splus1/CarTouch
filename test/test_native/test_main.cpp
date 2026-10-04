@@ -23,6 +23,7 @@
 #include "ecu_sim.h"
 #include "ct_login_lock.h"
 #include "ct_dbc_store.h"
+#include "ct_sha256.h"
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -1119,6 +1120,53 @@ void test_dbc_delete_decision(void) {
     TEST_ASSERT_EQUAL(CT_DBC_DEL_ALLOW, ctDbcDeleteDecision(false, false, false));
 }
 
+static void ctTestSha(const uint8_t* d, size_t n, size_t chunk, char* out) {
+    CtSha256 c; ctSha256Init(c);
+    for (size_t i = 0; i < n; i += chunk) ctSha256Update(c, d + i, (n - i < chunk) ? (n - i) : chunk);
+    ctSha256FinishHex(c, out);
+}
+
+void test_sha256_known_vectors(void) {
+    char h[65];
+    ctTestSha((const uint8_t*)"", 0, 1, h);
+    TEST_ASSERT_EQUAL_STRING("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", h);
+    ctTestSha((const uint8_t*)"abc", 3, 3, h);
+    TEST_ASSERT_EQUAL_STRING("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", h);
+    const char* two = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
+    ctTestSha((const uint8_t*)two, strlen(two), 64, h);
+    TEST_ASSERT_EQUAL_STRING("248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1", h);
+}
+
+void test_sha256_chunking_does_not_change_result(void) {
+    uint8_t data[1000];
+    for (size_t i = 0; i < sizeof(data); ++i) data[i] = (uint8_t)(i * 31u + 7u);
+    char a[65], b[65], c[65];
+    ctTestSha(data, sizeof(data), sizeof(data), a);
+    ctTestSha(data, sizeof(data), 1, b);
+    ctTestSha(data, sizeof(data), 63, c);
+    TEST_ASSERT_EQUAL_STRING(a, b);
+    TEST_ASSERT_EQUAL_STRING(a, c);
+    TEST_ASSERT_EQUAL_STRING("5097e7d587352f5097062ae679f37bda5802d9f875aba14c8cb4d1a188ada179", a);
+}
+
+void test_sha256_boundary_lengths_and_hex_compare(void) {
+    uint8_t data[130];
+    memset(data, 'a', sizeof(data));
+    char h55[65], h56[65], h64[65];
+    ctTestSha(data, 55, 7, h55);
+    ctTestSha(data, 56, 7, h56);
+    ctTestSha(data, 64, 7, h64);
+    TEST_ASSERT_EQUAL_STRING("9f4390f8d30c2dd92ec9f095b65e2b9ae9b0a925a5258e241c9f1e910f734318", h55);
+    TEST_ASSERT_EQUAL_STRING("b35439a4ac6f0948b6d6f9e3c6af0f5f590ce20f1bde7090ef7970686ec6738a", h56);
+    TEST_ASSERT_EQUAL_STRING("ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb", h64);
+    TEST_ASSERT_TRUE(ctSha256HexEqual(h55, h55));
+    char upper[65]; strcpy(upper, h55); upper[0] = (char)(upper[0] >= 'a' ? upper[0] - 32 : upper[0]);
+    TEST_ASSERT_TRUE(ctSha256HexEqual(h55, upper));
+    TEST_ASSERT_FALSE(ctSha256HexEqual(h55, h56));
+    TEST_ASSERT_FALSE(ctSha256HexEqual(h55, "abc"));
+    TEST_ASSERT_FALSE(ctSha256HexEqual(nullptr, h55));
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_tx_guard_listen_only);
@@ -1199,5 +1247,8 @@ int main(int, char**) {
     RUN_TEST(test_dbc_scan_counts_messages_and_cap);
     RUN_TEST(test_dbc_scan_rejects_binary);
     RUN_TEST(test_dbc_delete_decision);
+    RUN_TEST(test_sha256_known_vectors);
+    RUN_TEST(test_sha256_chunking_does_not_change_result);
+    RUN_TEST(test_sha256_boundary_lengths_and_hex_compare);
     return UNITY_END();
 }
