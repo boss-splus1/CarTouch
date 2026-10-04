@@ -15,6 +15,7 @@
 #include "ct_json_validation.h"
 #include "ct_battery.h"
 #include "ct_obd_validity.h"
+#include "ct_listen_override.h"
 #include "ct_can_config.h"
 #include "ct_storage_guard.h"
 #include "ct_can_record.h"
@@ -892,6 +893,15 @@ void test_obd_validity_mask_bits_are_independent(void) {
     TEST_ASSERT_FALSE(ctVdValid(0, CT_VD_RPM));
 }
 
+void test_learn_listen_only_override_is_never_persisted(void) {
+    // Not learning: whatever RAM holds is saved.
+    TEST_ASSERT_TRUE(ctPersistedListenOnly(true, false, false));
+    TEST_ASSERT_FALSE(ctPersistedListenOnly(false, false, true));
+    // Learning forced Listen-Only: the user's earlier choice is saved, not the forced true.
+    TEST_ASSERT_FALSE(ctPersistedListenOnly(true, true, false));
+    TEST_ASSERT_TRUE(ctPersistedListenOnly(true, true, true));
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_tx_guard_listen_only);
@@ -958,5 +968,6 @@ int main(int, char**) {
     RUN_TEST(test_obd_value_goes_stale_after_limit);
     RUN_TEST(test_obd_value_freshness_survives_millis_wraparound);
     RUN_TEST(test_obd_validity_mask_bits_are_independent);
+    RUN_TEST(test_learn_listen_only_override_is_never_persisted);
     return UNITY_END();
 }
