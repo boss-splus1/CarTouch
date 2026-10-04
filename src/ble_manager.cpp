@@ -212,7 +212,7 @@ void BLEManager::_handleCommand(const String& command, uint16_t connHandle) {
         return;
     }
 
-    if (cmd.startsWith("AUTH:")) {
+    if (cmd.length() >= 5 && cmd.substring(0, 5).equalsIgnoreCase("AUTH:")) {   // keyword is case-insensitive; the password is not
         if (_authenticateCommand(cmd.substring(5), connHandle)) _sendStatus("COMMAND_AUTHENTICATED", connHandle);
         else _sendStatus(ctLoginLocked(_authLock, millis()) ? "COMMAND_LOCKED" : "COMMAND_AUTH_FAILED", connHandle);
         return;
@@ -356,7 +356,7 @@ void BLEManager::_handleCommand(const String& command, uint16_t connHandle) {
         return;
     }
 
-    if (cmd.startsWith("START:")) {
+    if (cmd.length() >= 6 && cmd.substring(0, 6).equalsIgnoreCase("START:")) {   // keyword is case-insensitive; the password is not
         int first = cmd.indexOf(':');
         int second = cmd.lastIndexOf(':');    // size is after the LAST ':' so passwords may contain ':'
         if (second <= first) second = -1;
