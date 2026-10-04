@@ -288,14 +288,14 @@ function handleMessage(data) {
 function updateDashboard(data) {
     const speedEl = document.getElementById('speed-display');
     if (speedEl) {
-        speedEl.innerHTML = `${data.speed || 0} <small>km/h</small>`;
+        speedEl.innerHTML = `${data.speed ?? '--'} <small>km/h</small>`;
     }
     
     const rpmEl = document.getElementById('dash-rpm');
-    if (rpmEl) rpmEl.textContent = data.rpm || 0;
+    if (rpmEl) rpmEl.textContent = data.rpm ?? '--';
     
     const tempEl = document.getElementById('dash-temp');
-    if (tempEl) tempEl.textContent = `${data.coolantTemp ?? '--'} °C`;
+    if (tempEl) tempEl.textContent = data.coolantTemp == null ? '-- °C' : `${data.coolantTemp} °C`;
     
     const batteryEl = document.getElementById('dash-battery');
     if (batteryEl) {
@@ -305,7 +305,7 @@ function updateDashboard(data) {
     }
     
     const fuelEl = document.getElementById('dash-fuel');
-    if (fuelEl) fuelEl.textContent = `${data.fuel ?? '--'}%`;
+    if (fuelEl) fuelEl.textContent = data.fuel == null ? '--%' : `${data.fuel}%`;
 }
 
 // ○○○○○○○○○○○○○○○○○○○○○○○○○○○○○○
