@@ -176,7 +176,22 @@ jobs:
 
       # Runs after the upload so the images are kept even if a slot is too small.
       - name: Firmware size vs OTA slot
-        run: python3 scripts/check_fw_size.py 8192 bundle --strict
+        run: |
+          set +e
+          python3 scripts/check_fw_size.py 8192 bundle --strict | tee size.txt
+          status=${PIPESTATUS[0]}
+          {
+            echo '### Firmware size vs OTA slot'
+            echo '```'
+            cat size.txt
+            echo '```'
+            echo
+            echo '### Files in bundle (bytes)'
+            echo '```'
+            find bundle -type f -printf '%s %p\n' | sort -k2
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $status
 
   # Source checks, static analysis and unit tests. Quick checks that need no
   # PlatformIO run first so a simple mistake fails within seconds.
@@ -193,6 +208,9 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+
+      - name: Prepare report folder
+        run: mkdir -p report
 
       - name: Validate SPIFFS path lengths
         run: |
@@ -233,10 +251,14 @@ jobs:
           PY
 
       - name: Verify only approved modules transmit on CAN
-        run: python3 scripts/check_tx_paths.py src
+        run: |
+          set -o pipefail
+          python3 scripts/check_tx_paths.py src 2>&1 | tee report/check_tx_paths.txt
 
       - name: Audit DBC files (duplicates, duplicate ids)
-        run: python3 scripts/audit_dbc.py
+        run: |
+          set -o pipefail
+          python3 scripts/audit_dbc.py 2>&1 | tee report/audit_dbc.txt
 
       - name: Compute cache key
         id: keys
@@ -276,16 +298,59 @@ jobs:
         run: pio pkg install -e esp32-s3-devkitc-1 -e esp32-s3-4mb
 
       - name: Static analysis
-        run: pio check -e esp32-s3-devkitc-1 --skip-packages
+        run: |
+          set -o pipefail
+          pio check -e esp32-s3-devkitc-1 --skip-packages 2>&1 | tee report/pio_check_16mb.txt
 
       - name: Static analysis (4 MB profile)
-        run: pio check -e esp32-s3-4mb --skip-packages
+        run: |
+          set -o pipefail
+          pio check -e esp32-s3-4mb --skip-packages 2>&1 | tee report/pio_check_4mb.txt
 
       # Reads the header PlatformIO installed above, so it runs after the
       # static-analysis steps. It passed on the first real run, so it is now
       # a hard check (no continue-on-error).
       - name: Verify MCP2515 8 MHz bit-timing table
-        run: python3 scripts/check_mcp_timing.py
+        run: |
+          set -o pipefail
+          python3 scripts/check_mcp_timing.py 2>&1 | tee report/mcp_timing.txt
 
       - name: Native unit tests
-        run: pio test -e native
+        run: |
+          set -o pipefail
+          pio test -e native -v 2>&1 | tee report/native_tests.txt
+
+      # Always runs, even after a failure, so the numbers are visible on the
+      # run summary page and in the small "ci-report" download.
+      - name: Write run summary
+        if: always()
+        run: |
+          {
+            echo '### Native unit tests'
+            echo '```'
+            grep -E "test_main.cpp:[0-9]+:.*:(PASS|FAIL)" report/native_tests.txt | grep -c ":PASS" | sed 's/^/passed: /' || true
+            grep -E ":FAIL" report/native_tests.txt || true
+            grep -E "Tests? .*(Failures|Ignored)|[0-9]+ test cases" report/native_tests.txt || true
+            echo '```'
+            echo '### Static analysis (pio check)'
+            echo '```'
+            grep -hE "HIGH|MEDIUM|LOW|Total|PASSED|FAILED|defect" report/pio_check_*.txt | tail -n 30 || true
+            echo '```'
+            echo '### MCP2515 bit timing'
+            echo '```'
+            cat report/mcp_timing.txt 2>/dev/null || true
+            echo '```'
+            echo '### DBC audit (first lines)'
+            echo '```'
+            head -n 12 report/audit_dbc.txt 2>/dev/null || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload CI report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-report
+          path: report
+          if-no-files-found: ignore
+          retention-days: 14
