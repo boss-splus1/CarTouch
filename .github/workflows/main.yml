@@ -258,7 +258,8 @@ jobs:
       - name: Audit DBC files (duplicates, duplicate ids)
         run: |
           set -o pipefail
-          python3 scripts/audit_dbc.py 2>&1 | tee report/audit_dbc.txt
+          python3 scripts/audit_dbc.py --check 2>&1 | tee report/audit_dbc.txt
+          python3 scripts/audit_dbc.py 2>&1 | tee -a report/audit_dbc.txt
 
       - name: Compute cache key
         id: keys
