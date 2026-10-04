@@ -21,6 +21,7 @@
 #include "ct_can_record.h"
 #include "can_service.h"
 #include "ecu_sim.h"
+#include "ct_login_lock.h"
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -1013,6 +1014,32 @@ void test_sim_ecu_poll_validity_with_partial_ecu(void) {
     TEST_ASSERT_EQUAL_HEX8(0, mask);
 }
 
+void test_login_lock_is_shared_and_expires(void) {
+    CtLoginLock l;
+    TEST_ASSERT_FALSE(ctLoginLocked(l, 1000));
+    // 3 wrong guesses on one path and 2 on the other add up to the limit.
+    ctLoginFailed(l, 1000); ctLoginFailed(l, 1001); ctLoginFailed(l, 1002);
+    TEST_ASSERT_FALSE(ctLoginLocked(l, 1003));
+    ctLoginFailed(l, 1004);
+    ctLoginFailed(l, 1005);
+    TEST_ASSERT_TRUE(ctLoginLocked(l, 1006));
+    TEST_ASSERT_TRUE(ctLoginLocked(l, 1005 + CT_LOGIN_LOCK_MS - 1));
+    TEST_ASSERT_FALSE(ctLoginLocked(l, 1005 + CT_LOGIN_LOCK_MS));    // expired and cleared
+    TEST_ASSERT_EQUAL(0, l.fails);
+    // A correct password resets the counter.
+    ctLoginFailed(l, 5000); ctLoginFailed(l, 5001);
+    ctLoginSucceeded(l);
+    TEST_ASSERT_EQUAL(0, l.fails);
+}
+
+void test_login_lock_survives_millis_wraparound(void) {
+    CtLoginLock l;
+    const uint32_t t0 = 0xFFFFFF00u;    // lock end wraps past zero
+    for (int i = 0; i < 5; ++i) ctLoginFailed(l, t0);
+    TEST_ASSERT_TRUE(ctLoginLocked(l, t0 + 1000));
+    TEST_ASSERT_FALSE(ctLoginLocked(l, t0 + CT_LOGIN_LOCK_MS + 1));
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_tx_guard_listen_only);
@@ -1085,5 +1112,7 @@ int main(int, char**) {
     RUN_TEST(test_sim_ecu_multiframe_dtc_reassembly);
     RUN_TEST(test_sim_ecu_lost_consecutive_frame_is_not_accepted);
     RUN_TEST(test_sim_ecu_poll_validity_with_partial_ecu);
+    RUN_TEST(test_login_lock_is_shared_and_expires);
+    RUN_TEST(test_login_lock_survives_millis_wraparound);
     return UNITY_END();
 }
