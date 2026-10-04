@@ -86,23 +86,19 @@
 // ○○○○○○○○○○○○○○○○○○○○○○○○○○○○○○
 
 #define WIFI_AP_NAME     "CarTouch"
-#define WIFI_AP_PASSWORD "12345678"    // Temporary AP password - change from Settings ASAP (min 8 chars)
+#define WIFI_AP_PASSWORD "8580Reza."   // Wi-Fi AP password (min 8 chars) - same as the web/BLE password
 #define WIFI_MAX_RETRY   20
 #define WIFI_TIMEOUT_MS  15000
 
 #define WEB_PORT 80
 #define WS_PORT  81
 
-// These default credentials are visible to anyone who reads this repository,
-// so they are first-boot credentials only and must be changed before normal use:
-//  1. They are a first-boot placeholder only.
-//  2. AppConfig::forcePasswordChange starts true and stays true until the
-//     user changes the password from the TFT or web settings screen; the
-//     device shows a persistent warning in the meantime (access itself
-//     is not blocked, since the user may need the default credentials to
-//     reach Settings in the first place).
+// Default login used everywhere: web UI, TFT, BLE (AUTH / OTA) and the Wi-Fi AP.
+// It is the same on every device and is visible in the repository, so change it
+// from Settings if the device is used anywhere untrusted. webUser is char[16]
+// and webPass is char[16] (max 15 characters).
 #define WEB_DEFAULT_USER "cartouch"
-#define WEB_DEFAULT_PASS "CarTouch#2026"
+#define WEB_DEFAULT_PASS "8580Reza."
 
 // ■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
 // □□□□□□□□□□ Power management
@@ -213,7 +209,7 @@ struct AppConfig {
     // Web
     char webUser[16]           = WEB_DEFAULT_USER;
     char webPass[16]           = WEB_DEFAULT_PASS;
-    bool forcePasswordChange   = true;                // Stays true until the user changes the password
+    bool forcePasswordChange   = false;               // Legacy flag; the default login is accepted everywhere
 
     // Vehicle
     char     vehicleBrand[32] = "Generic";

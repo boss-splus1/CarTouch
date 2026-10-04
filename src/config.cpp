@@ -104,10 +104,8 @@ static void applyDefaultConfigValues() {
     strcpy(currentConfig.wifiPassword, "");
     currentConfig.wifiEnabled = true;
     strcpy(currentConfig.webUser, WEB_DEFAULT_USER);
-    // Per-device random password instead of one shared constant. It is
-    // printed on Serial at boot while forcePasswordChange is set.
-    ctGeneratePassword(currentConfig.webPass, sizeof(currentConfig.webPass), esp_random);
-    currentConfig.forcePasswordChange = true;
+    strcpy(currentConfig.webPass, WEB_DEFAULT_PASS);
+    currentConfig.forcePasswordChange = false;
     strcpy(currentConfig.vehicleBrand, "Generic");
     strcpy(currentConfig.vehicleModel, "OBD-II");
     currentConfig.vehicleYear = 2020;
@@ -218,9 +216,17 @@ bool loadConfig() {
     currentConfig.vehicleBrand[sizeof(currentConfig.vehicleBrand) - 1] = '\0';
     currentConfig.vehicleModel[sizeof(currentConfig.vehicleModel) - 1] = '\0';
 
+    // Devices flashed with the old firmware hold a random temporary password
+    // that nobody could read without a serial cable, and BLE stayed locked
+    // until it was changed. If that password was never changed, replace it
+    // with the default login (other settings are kept).
     if (currentConfig.forcePasswordChange) {
-        Serial.printf("[SECURITY] Web login: user '%s', temporary password '%s' (change it on first login)\n",
-                      currentConfig.webUser, currentConfig.webPass);
+        strcpy(currentConfig.webUser, WEB_DEFAULT_USER);
+        strcpy(currentConfig.webPass, WEB_DEFAULT_PASS);
+        currentConfig.forcePasswordChange = false;
+        if (!saveConfig()) {
+            Serial.println("[NVS] Failed to persist default login");
+        }
     }
     configLoaded = true;
     Serial.println(validStoredConfig ? "[NVS] Configuration loaded" : "[NVS] Default configuration loaded");
@@ -302,9 +308,8 @@ AppConfig* getConfig() {
 
 bool isUsingDefaultPassword() {
     const AppConfig* cfg = getConfig();
-    if (cfg->forcePasswordChange) return true;
-    if (strcmp(cfg->webPass, WEB_DEFAULT_PASS) == 0) return true;
-    return false;
+    // The default login is allowed everywhere (web, TFT, BLE, OTA).
+    return cfg->forcePasswordChange;
 }
 
 bool setWebPassword(const char* newUser, const char* newPass) {
@@ -314,10 +319,6 @@ bool setWebPassword(const char* newUser, const char* newPass) {
     }
     if (strlen(newPass) >= sizeof(getConfig()->webPass)) {
         Serial.println("[CONFIG] New password is too long (max 15 characters)");
-        return false;
-    }
-    if (strcmp(newPass, WEB_DEFAULT_PASS) == 0) {
-        Serial.println("[CONFIG] New password cannot match the default");
         return false;
     }
 

@@ -613,7 +613,7 @@ void WebServerManager::begin(uint16_t port) {
             request->send(200, "application/json", "{\"success\":true}");
         } else {
             request->send(400, "application/json",
-                "{\"success\":false,\"error\":\"Password must be at least 8 characters and different from the default password\"}");
+                "{\"success\":false,\"error\":\"Password must be 8 to 15 characters\"}");
         }
     });
 
