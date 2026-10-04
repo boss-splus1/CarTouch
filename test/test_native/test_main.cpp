@@ -24,6 +24,7 @@
 #include "ct_login_lock.h"
 #include "ct_dbc_store.h"
 #include "ct_sha256.h"
+#include "ct_dbc_manifest.h"
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -1167,6 +1168,61 @@ void test_sha256_boundary_lengths_and_hex_compare(void) {
     TEST_ASSERT_FALSE(ctSha256HexEqual(nullptr, h55));
 }
 
+void test_dbc_manifest_parses_real_builtin_line(void) {
+    const char* line = "{\"name\":\"ESR.dbc\",\"size\":65956,\"sha256\":\"e02b01a53b444570e4a48b792a47ed4284b0a387b03769e9091a6304fbccf676\",\"messages\":80,\"tier\":\"specialized\",\"profiles\":0,\"in4mb\":false,\"source\":\"unverified\",\"license\":\"unverified\"},\n";
+    CtDbcManifestEntry e;
+    TEST_ASSERT_TRUE(ctDbcManifestParseLine(line, e));
+    TEST_ASSERT_EQUAL_STRING("ESR.dbc", e.name);
+    TEST_ASSERT_EQUAL_UINT32(65956, e.size);
+    TEST_ASSERT_EQUAL_UINT32(80, e.messages);
+    TEST_ASSERT_EQUAL_STRING("e02b01a53b444570e4a48b792a47ed4284b0a387b03769e9091a6304fbccf676", e.sha256);
+    TEST_ASSERT_FALSE(ctDbcManifestParseLine(CT_DBC_MANIFEST_HEADER, e));
+    TEST_ASSERT_FALSE(ctDbcManifestParseLine(CT_DBC_MANIFEST_FOOTER, e));
+}
+
+void test_dbc_manifest_roundtrip(void) {
+    CtDbcManifestEntry a; memset(&a, 0, sizeof(a));
+    strcpy(a.name, "my_car.dbc"); a.size = 12345; a.messages = 42;
+    strcpy(a.sha256, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    char line[200];
+    size_t n = ctDbcManifestFormatLine(a, line, sizeof(line));
+    TEST_ASSERT_TRUE(n > 0);
+    TEST_ASSERT_EQUAL_UINT32(strlen(line), n);
+    CtDbcManifestEntry b;
+    TEST_ASSERT_TRUE(ctDbcManifestParseLine(line, b));
+    TEST_ASSERT_EQUAL_STRING(a.name, b.name);
+    TEST_ASSERT_EQUAL_UINT32(a.size, b.size);
+    TEST_ASSERT_EQUAL_UINT32(a.messages, b.messages);
+    TEST_ASSERT_EQUAL_STRING(a.sha256, b.sha256);
+    char tiny[20];
+    TEST_ASSERT_EQUAL_UINT32(0, ctDbcManifestFormatLine(a, tiny, sizeof(tiny)));
+    TEST_ASSERT_EQUAL_CHAR('\0', tiny[0]);
+}
+
+void test_dbc_manifest_rejects_bad_lines(void) {
+    const char* h = "\"sha256\":\"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\"";
+    char l[300]; CtDbcManifestEntry e;
+    snprintf(l, sizeof(l), "{\"name\":\"../x.dbc\",\"size\":5,%s,\"messages\":1}", h);
+    TEST_ASSERT_FALSE(ctDbcManifestParseLine(l, e));
+    snprintf(l, sizeof(l), "{\"name\":\"a\\\"b.dbc\",\"size\":5,%s,\"messages\":1}", h);
+    TEST_ASSERT_FALSE(ctDbcManifestParseLine(l, e));
+    snprintf(l, sizeof(l), "{\"name\":\"x.dbc\",\"size\":0,%s,\"messages\":1}", h);
+    TEST_ASSERT_FALSE(ctDbcManifestParseLine(l, e));
+    snprintf(l, sizeof(l), "{\"name\":\"x.dbc\",\"size\":5,\"sha256\":\"zz7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\",\"messages\":1}");
+    TEST_ASSERT_FALSE(ctDbcManifestParseLine(l, e));
+    snprintf(l, sizeof(l), "{\"name\":\"x.dbc\",\"size\":5,\"sha256\":\"abc\",\"messages\":1}");
+    TEST_ASSERT_FALSE(ctDbcManifestParseLine(l, e));
+    snprintf(l, sizeof(l), "{\"name\":\"x.dbc\",\"size\":99999999999,%s,\"messages\":1}", h);
+    TEST_ASSERT_FALSE(ctDbcManifestParseLine(l, e));
+    snprintf(l, sizeof(l), "{\"name\":\"x.dbc\",\"size\":5,%s}", h);          // no messages
+    TEST_ASSERT_FALSE(ctDbcManifestParseLine(l, e));
+    snprintf(l, sizeof(l), "{\"name\":\"x.dbc\",\"size\":5,%s,\"messages\":1", h);   // truncated, no closing brace
+    TEST_ASSERT_FALSE(ctDbcManifestParseLine(l, e));
+    snprintf(l, sizeof(l), "{\"name\":\"x.dbc");                                // unterminated string
+    TEST_ASSERT_FALSE(ctDbcManifestParseLine(l, e));
+    TEST_ASSERT_FALSE(ctDbcManifestParseLine(nullptr, e));
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_tx_guard_listen_only);
@@ -1250,5 +1306,8 @@ int main(int, char**) {
     RUN_TEST(test_sha256_known_vectors);
     RUN_TEST(test_sha256_chunking_does_not_change_result);
     RUN_TEST(test_sha256_boundary_lengths_and_hex_compare);
+    RUN_TEST(test_dbc_manifest_parses_real_builtin_line);
+    RUN_TEST(test_dbc_manifest_roundtrip);
+    RUN_TEST(test_dbc_manifest_rejects_bad_lines);
     return UNITY_END();
 }
