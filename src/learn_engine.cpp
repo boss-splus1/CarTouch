@@ -133,6 +133,8 @@ void LearnEngine::beginLearning(const char* label, const char* displayName, uint
         }
         *configuredListenOnly = true;
         _forcedListenOnly       = true;
+        // Keep the user's own choice for any saveConfig() during this session.
+        configSetLearnListenOverride(_bus == CAN_BUS_1 ? 0 : 1, true, _previousListenOnlyMode);
     }
 
     if (!_can.subscribeRx(_bus, CAN_RX_LEARN)) {
@@ -466,6 +468,7 @@ bool LearnEngine::_cancelLocked(uint32_t expectedSessionId) {
                 getErrorLog()->log(LOG_CAT_LEARN, LOG_WARN, "Failed to restore Normal mode after learning - staying in Listen-Only (fail-safe)");
             }
         }
+        configSetLearnListenOverride(_bus == CAN_BUS_1 ? 0 : 1, false, false);
         _forcedListenOnly = false;
     }
 

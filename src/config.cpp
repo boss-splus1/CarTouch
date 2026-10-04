@@ -10,6 +10,7 @@
 #include "sd_storage.h"
 #include <esp_random.h>
 #include "ct_can_config.h"
+#include "ct_listen_override.h"
 #include <nvs_flash.h>
 #include <nvs.h>
 
@@ -225,6 +226,15 @@ bool loadConfig() {
     return true;
 }
 
+static bool s_learnForced[2]     = {false, false};
+static bool s_learnUserChoice[2] = {false, false};
+
+void configSetLearnListenOverride(uint8_t busIndex, bool forced, bool userChoice) {
+    if (busIndex > 1) return;
+    s_learnForced[busIndex]     = forced;
+    s_learnUserChoice[busIndex] = userChoice;
+}
+
 bool saveConfig() {
     nvs_handle_t nvsHandle;
     esp_err_t err = nvs_open("CarTouch", NVS_READWRITE, &nvsHandle);
@@ -234,7 +244,13 @@ bool saveConfig() {
     }
 
     currentConfig.configMagic = 0xCAFE1234;
-    err = nvs_set_blob(nvsHandle, "config", &currentConfig, sizeof(AppConfig));
+    // Write a copy: the temporary Learn Listen-Only override must not reach flash.
+    AppConfig toSave = currentConfig;
+    toSave.listenOnlyMode = ctPersistedListenOnly(currentConfig.listenOnlyMode,
+                                                  s_learnForced[0], s_learnUserChoice[0]);
+    toSave.can1ListenOnly = ctPersistedListenOnly(currentConfig.can1ListenOnly,
+                                                  s_learnForced[1], s_learnUserChoice[1]);
+    err = nvs_set_blob(nvsHandle, "config", &toSave, sizeof(AppConfig));
 
     if (err == ESP_OK) {
         err = nvs_commit(nvsHandle);

@@ -295,6 +295,13 @@ bool isValidCan1Speed(uint32_t speed);
 // □□□□□□□□□□ Password / session helpers
 // ■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
 
+/**
+ * Learn Mode forces Listen-Only temporarily. While `forced` is true, saveConfig()
+ * writes `userChoice` for that bus instead of the temporary RAM value.
+ * busIndex: 0 = CAN1/TWAI listenOnlyMode, 1 = CAN2/MCP2515 can1ListenOnly.
+ */
+void configSetLearnListenOverride(uint8_t busIndex, bool forced, bool userChoice);
+
 /** True if the device is still using the default/temporary web password. */
 bool isUsingDefaultPassword();
 
