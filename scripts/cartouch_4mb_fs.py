@@ -19,6 +19,7 @@ if env.subst("$PIOENV") in ("esp32-s3-4mb", "esp32-s3-4mb-psram"):
         "dbc/hyundai_i30_2014.dbc",
         "dbc/nissan_xterra_2011.dbc",
         "dbc/toyota_2017_ref_pt.dbc",
+        "dbc/manifest.json",
     )
     source = os.path.join(env.subst("$PROJECT_DIR"), "data")
     staged = os.path.join(env.subst("$BUILD_DIR"), "cartouch-4mb-data")
