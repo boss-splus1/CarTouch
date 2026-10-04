@@ -19,10 +19,12 @@ env:
 
 jobs:
   # One job per firmware profile, run in parallel. Each job builds its own
-  # firmware (and filesystem image where the profile has one).
+  # firmware (and filesystem image where the profile has one). The per-profile
+  # "fw-*" uploads are only a hand-over to the bundle job; the bundle job
+  # deletes them again, so the run ends with ONE download: cartouch-firmware.
   build:
     name: Build ${{ matrix.env }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
 
     strategy:
@@ -48,10 +50,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -65,7 +67,7 @@ jobs:
           echo "pio=pio-build-${RUNNER_OS}-core${PIO_CORE_VERSION}-${platforms}-v1" >> "$GITHUB_OUTPUT"
 
       - name: Cache PlatformIO packages
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.platformio
@@ -75,7 +77,7 @@ jobs:
       # Libraries are pinned, so this cache is exact: it is only reused for
       # the same platformio.ini.
       - name: Cache libraries (${{ matrix.env }})
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .pio/libdeps/${{ matrix.env }}
           key: libdeps-${{ matrix.env }}-${{ hashFiles('platformio.ini') }}
@@ -104,7 +106,7 @@ jobs:
         run: python3 scripts/check_spiffs_image.py ${{ matrix.partitions }} .pio/build/${{ matrix.env }}/spiffs.bin
 
       - name: Upload build output
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fw-${{ matrix.env }}
           path: |
@@ -121,15 +123,18 @@ jobs:
   bundle:
     name: Collect firmware and check OTA slot size
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write   # needed only to delete the temporary fw-* artifacts
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Download build outputs
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: fw-*
           path: parts
@@ -145,12 +150,29 @@ jobs:
           find bundle -type f | sort
 
       - name: Upload firmware artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cartouch-firmware
           path: bundle
           if-no-files-found: error
           retention-days: 30
+
+      # The bundle above already contains everything, so the temporary
+      # per-profile uploads are removed to leave a single download.
+      - name: Remove temporary per-profile artifacts
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const list = await github.paginate(
+              github.rest.actions.listWorkflowRunArtifacts,
+              { owner, repo, run_id: context.runId });
+            for (const a of list) {
+              if (a.name.startsWith('fw-')) {
+                await github.rest.actions.deleteArtifact({ owner, repo, artifact_id: a.id });
+                core.info('Deleted temporary artifact ' + a.name);
+              }
+            }
 
       # Runs after the upload so the images are kept even if a slot is too small.
       - name: Firmware size vs OTA slot
@@ -160,15 +182,15 @@ jobs:
   # PlatformIO run first so a simple mistake fails within seconds.
   checks:
     name: Source checks, static analysis and unit tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -223,7 +245,7 @@ jobs:
           echo "pio=pio-checks-${RUNNER_OS}-core${PIO_CORE_VERSION}-${platforms}-v1" >> "$GITHUB_OUTPUT"
 
       - name: Cache PlatformIO packages
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.platformio
@@ -231,7 +253,7 @@ jobs:
           key: ${{ steps.keys.outputs.pio }}
 
       - name: Cache libraries
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .pio/libdeps
           key: libdeps-checks-${{ hashFiles('platformio.ini') }}
