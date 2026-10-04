@@ -1474,8 +1474,19 @@ void TFT_UI::_closePasswordScreen() {
 void TFT_UI::_refreshPasswordWarning() {
     if (!_passwordWarningLabel) return;
     if (isUsingDefaultPassword()) {
+        // The random per-device password was only printed on Serial. Show it
+        // here too so the web page can be used without a USB cable. It is
+        // shown only while it is still the temporary one.
+        AppConfig* cfg = getConfig();
+        if (cfg && cfg->forcePasswordChange) {
+            lv_label_set_text_fmt(_passwordWarningLabel, "Temp web pass: %s", cfg->webPass);
+        } else {
+            lv_label_set_text(_passwordWarningLabel, "Factory password is active - change it");
+        }
         lv_obj_clear_flag(_passwordWarningLabel, LV_OBJ_FLAG_HIDDEN);
     } else {
+        // Overwrite the text so the old password does not stay in the label buffer.
+        lv_label_set_text(_passwordWarningLabel, "Factory password is active - change it");
         lv_obj_add_flag(_passwordWarningLabel, LV_OBJ_FLAG_HIDDEN);
     }
 }

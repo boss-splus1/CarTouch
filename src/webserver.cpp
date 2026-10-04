@@ -1179,7 +1179,12 @@ void WebServerManager::_handleOtaFinished(AsyncWebServerRequest* request) {
         if (Update.isRunning()) Update.abort();
         if (_otaIsFs) SPIFFS.begin(false);                                                   // Remount so the web server keeps working
         Serial.printf("[OTA] Failed: %s\n", err.c_str());
-        request->send(400, "application/json", "{\"ok\":false,\"msg\":\"" + err + "\"}");
+        JsonDocument errDoc;
+        errDoc["ok"]  = false;
+        errDoc["msg"] = err;
+        String errJson;
+        serializeJson(errDoc, errJson);
+        request->send(400, "application/json", errJson);
     }
 
     _otaError = "";
