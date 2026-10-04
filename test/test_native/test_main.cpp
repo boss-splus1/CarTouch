@@ -20,6 +20,7 @@
 #include "ct_storage_guard.h"
 #include "ct_can_record.h"
 #include "can_service.h"
+#include "ecu_sim.h"
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -902,6 +903,116 @@ void test_learn_listen_only_override_is_never_persisted(void) {
     TEST_ASSERT_TRUE(ctPersistedListenOnly(true, true, true));
 }
 
+// ---- Simulated ECU (test/test_native/ecu_sim.h): OBD without a car ----
+
+// Same decode as obd2_reader.cpp for PID 0x0C: ((A*256)+B)/4.
+static bool simReadRpm(SimEcuMode mode, float& rpm) {
+    const uint8_t value[2] = { 0x1A, 0xF8 };    // 6904 / 4 = 1726 rpm
+    SimFrame f;
+    if (simEcuMode01(mode, 0x0C, value, 2, &f) == 0) return false;
+    if (!ctIsObdReplyFrame(f.id, false, false)) return false;
+    CtObdSingleFrame p;
+    if (!ctParseObdSingleFrame(f.data, f.length, 0x41, 0x0C, p)) return false;
+    if (p.dataOffset + 2 > f.length) return false;
+    rpm = ((f.data[p.dataOffset] * 256.0f) + f.data[p.dataOffset + 1]) / 4.0f;
+    return true;
+}
+
+void test_sim_ecu_normal_reply_decodes_rpm(void) {
+    float rpm = 0;
+    TEST_ASSERT_TRUE(simReadRpm(SIM_ECU_NORMAL, rpm));
+    TEST_ASSERT_EQUAL_FLOAT(1726.0f, rpm);
+}
+
+void test_sim_ecu_bad_replies_never_produce_a_value(void) {
+    float rpm = -1.0f;
+    TEST_ASSERT_FALSE(simReadRpm(SIM_ECU_SILENT, rpm));
+    TEST_ASSERT_FALSE(simReadRpm(SIM_ECU_WRONG_PID, rpm));
+    TEST_ASSERT_FALSE(simReadRpm(SIM_ECU_TRUNCATED, rpm));
+    TEST_ASSERT_FALSE(simReadRpm(SIM_ECU_NEGATIVE, rpm));
+    TEST_ASSERT_EQUAL_FLOAT(-1.0f, rpm);    // output untouched: no invented number
+}
+
+void test_sim_ecu_multiframe_dtc_reassembly(void) {
+    const uint8_t dtcs[6] = { 0x01, 0x33, 0x01, 0x34, 0x02, 0x00 };    // 3rd is real
+    SimFrame fr[4];
+    const uint8_t n = simEcuMode03(dtcs, sizeof(dtcs), -1, fr, 4);
+    TEST_ASSERT_EQUAL(2, n);
+
+    uint8_t payload[64];
+    CtIsoTpReassembly st;
+    TEST_ASSERT_TRUE(ctIsoTpBegin(fr[0].data, fr[0].length, fr[0].id, false,
+                                  payload, sizeof(payload), st));
+    TEST_ASSERT_FALSE(ctIsoTpComplete(st));
+    TEST_ASSERT_TRUE(ctIsoTpAppend(fr[1].data, fr[1].length, fr[1].id, false, payload, st));
+    TEST_ASSERT_TRUE(ctIsoTpComplete(st));
+
+    uint16_t codes[8];
+    uint8_t count = 0;
+    TEST_ASSERT_TRUE(ctParseObdDtcPayload(payload, st.totalLength, codes, 8, count));
+    TEST_ASSERT_EQUAL(3, count);
+    TEST_ASSERT_EQUAL_HEX16(0x0133, codes[0]);
+    TEST_ASSERT_EQUAL_HEX16(0x0200, codes[2]);
+}
+
+void test_sim_ecu_lost_consecutive_frame_is_not_accepted(void) {
+    const uint8_t dtcs[18] = { 1,1, 1,2, 1,3, 1,4, 1,5, 1,6, 1,7, 1,8, 1,9 };    // total 19: FF + 2 CF
+    SimFrame fr[6];
+    const uint8_t n = simEcuMode03(dtcs, sizeof(dtcs), 0, fr, 6);    // first CF lost
+    TEST_ASSERT_EQUAL(2, n);    // FF + the surviving CF (sequence 2)
+
+    uint8_t payload[64];
+    CtIsoTpReassembly st;
+    TEST_ASSERT_TRUE(ctIsoTpBegin(fr[0].data, fr[0].length, fr[0].id, false,
+                                  payload, sizeof(payload), st));
+    // The next frame that arrives has sequence 2, but 1 is expected.
+    TEST_ASSERT_FALSE(ctIsoTpAppend(fr[1].data, fr[1].length, fr[1].id, false, payload, st));
+    TEST_ASSERT_FALSE(ctIsoTpComplete(st));
+    // A frame from another ECU id is rejected too.
+    SimFrame other = fr[1];
+    other.id = 0x7E9;
+    other.data[0] = 0x21;
+    TEST_ASSERT_FALSE(ctIsoTpAppend(other.data, other.length, other.id, false, payload, st));
+}
+
+// Mirrors the validity update in obd2_reader.cpp (OBD_POLL_DONE): only PIDs
+// the ECU really answered count, and only for CT_OBD_STALE_MS afterwards.
+void test_sim_ecu_poll_validity_with_partial_ecu(void) {
+    static const uint8_t bits[7] = { CT_VD_RPM, CT_VD_SPEED, CT_VD_COOLANT,
+                                     CT_VD_THROTTLE, CT_VD_FUEL, CT_VD_RUNTIME,
+                                     CT_VD_BATTERY };
+    static const uint8_t pids[7] = { 0x0C, 0x0D, 0x05, 0x11, 0x2F, 0x1F, 0x42 };
+    bool answered[7] = {};
+    uint32_t lastMs[7] = {};
+    const uint8_t value[2] = { 0x10, 0x00 };
+
+    uint32_t now = 1000;
+    for (int round = 0; round < 3; ++round, now += 1500) {
+        for (int i = 0; i < 7; ++i) {
+            // This simulated car only supports RPM and speed.
+            const SimEcuMode m = (i < 2) ? SIM_ECU_NORMAL : SIM_ECU_SILENT;
+            SimFrame f;
+            CtObdSingleFrame p;
+            if (simEcuMode01(m, pids[i], value, 2, &f) &&
+                ctParseObdSingleFrame(f.data, f.length, 0x41, pids[i], p)) {
+                answered[i] = true;
+                lastMs[i] = now;
+            }
+        }
+    }
+    uint8_t mask = 0;
+    for (int i = 0; i < 7; ++i)
+        if (ctObdValueFresh(answered[i], lastMs[i], now, CT_OBD_STALE_MS)) mask |= bits[i];
+    TEST_ASSERT_EQUAL_HEX8(CT_VD_RPM | CT_VD_SPEED, mask);
+
+    // Ignition off: nobody answers any more. After the stale limit, nothing is valid.
+    now += CT_OBD_STALE_MS + 1;
+    mask = 0;
+    for (int i = 0; i < 7; ++i)
+        if (ctObdValueFresh(answered[i], lastMs[i], now, CT_OBD_STALE_MS)) mask |= bits[i];
+    TEST_ASSERT_EQUAL_HEX8(0, mask);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_tx_guard_listen_only);
@@ -969,5 +1080,10 @@ int main(int, char**) {
     RUN_TEST(test_obd_value_freshness_survives_millis_wraparound);
     RUN_TEST(test_obd_validity_mask_bits_are_independent);
     RUN_TEST(test_learn_listen_only_override_is_never_persisted);
+    RUN_TEST(test_sim_ecu_normal_reply_decodes_rpm);
+    RUN_TEST(test_sim_ecu_bad_replies_never_produce_a_value);
+    RUN_TEST(test_sim_ecu_multiframe_dtc_reassembly);
+    RUN_TEST(test_sim_ecu_lost_consecutive_frame_is_not_accepted);
+    RUN_TEST(test_sim_ecu_poll_validity_with_partial_ecu);
     return UNITY_END();
 }
