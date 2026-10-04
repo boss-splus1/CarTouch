@@ -42,7 +42,7 @@ The authenticated Web UI remains the full configuration surface.
 
 ## Hardening notes
 - Command/Data characteristics require an encrypted (paired) link.
-- OTA is refused while the default web password is still in use (`OTA_CHANGE_DEFAULT_PASSWORD`).
+- The default login is `cartouch` / `8580Reza.` (same as the Wi-Fi AP password). OTA is only refused if the legacy `forcePasswordChange` flag is set (`OTA_CHANGE_DEFAULT_PASSWORD`).
 - 5 wrong passwords lock BLE OTA for 60 seconds.
 - The image header is checked while data arrives: `OTA_BAD_HEADER` (not an ESP image), `OTA_WRONG_CHIP` (not built for the ESP32-S3) and `OTA_WRONG_FLASH_SIZE` (built for more flash than the device has, for example a 16 MB image sent to a 4 MB board). The transfer is aborted and the running firmware is untouched.
 - SHA-256 is computed incrementally as bytes arrive. It detects a transfer/file mismatch against the supplied digest; it is not a digital signature and does not prove who built the image. Use a checksum from the same trusted release artifact.
