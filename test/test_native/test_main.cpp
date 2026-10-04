@@ -22,6 +22,7 @@
 #include "can_service.h"
 #include "ecu_sim.h"
 #include "ct_login_lock.h"
+#include "ct_dbc_store.h"
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -1040,6 +1041,84 @@ void test_login_lock_survives_millis_wraparound(void) {
     TEST_ASSERT_FALSE(ctLoginLocked(l, t0 + CT_LOGIN_LOCK_MS + 1));
 }
 
+void test_dbc_name_rules(void) {
+    TEST_ASSERT_TRUE(ctDbcNameValid("toyota_prius_2010_pt.dbc"));
+    TEST_ASSERT_TRUE(ctDbcNameValid("My-Car.v2.DBC"));
+    TEST_ASSERT_FALSE(ctDbcNameValid(nullptr));
+    TEST_ASSERT_FALSE(ctDbcNameValid(".dbc"));
+    TEST_ASSERT_FALSE(ctDbcNameValid(".hidden.dbc"));
+    TEST_ASSERT_FALSE(ctDbcNameValid("a..b.dbc"));
+    TEST_ASSERT_FALSE(ctDbcNameValid("../x.dbc"));
+    TEST_ASSERT_FALSE(ctDbcNameValid("dir/x.dbc"));
+    TEST_ASSERT_FALSE(ctDbcNameValid("dir\\x.dbc"));
+    TEST_ASSERT_FALSE(ctDbcNameValid("car.txt"));
+    TEST_ASSERT_FALSE(ctDbcNameValid("my car.dbc"));
+    TEST_ASSERT_FALSE(ctDbcNameValid("a\"b.dbc"));
+    TEST_ASSERT_TRUE(ctDbcNameValid("abcdefghijklmnopqrstuv.dbc"));   // 26 chars
+    TEST_ASSERT_FALSE(ctDbcNameValid("abcdefghijklmnopqrstuvw.dbc")); // 27 chars
+}
+
+void test_dbc_path_fits_profile_field(void) {
+    char p[32];
+    TEST_ASSERT_TRUE(ctDbcBuildPath("abcdefghijklmnopqrstuv.dbc", p, sizeof(p)));
+    TEST_ASSERT_EQUAL_STRING("/dbc/abcdefghijklmnopqrstuv.dbc", p);
+    TEST_ASSERT_EQUAL_UINT32(31, strlen(p));
+    char small[10];
+    TEST_ASSERT_FALSE(ctDbcBuildPath("car.dbc", small, sizeof(small)));
+    TEST_ASSERT_EQUAL_CHAR('\0', small[0]);
+    TEST_ASSERT_FALSE(ctDbcBuildPath("../car.dbc", p, sizeof(p)));
+    TEST_ASSERT_EQUAL_CHAR('\0', p[0]);
+}
+
+void test_dbc_size_check(void) {
+    TEST_ASSERT_EQUAL(CT_DBC_EMPTY, ctDbcSizeCheck(0, 1000000, 0));
+    TEST_ASSERT_EQUAL(CT_DBC_TOO_BIG, ctDbcSizeCheck(CT_DBC_MAX_BYTES + 1, 10000000, 0));
+    TEST_ASSERT_EQUAL(CT_DBC_OK, ctDbcSizeCheck(CT_DBC_MAX_BYTES, 10000000, 0));
+    TEST_ASSERT_EQUAL(CT_DBC_NO_SPACE, ctDbcSizeCheck(100000, 100000 + CT_DBC_RESERVE_BYTES - 1, 0));
+    TEST_ASSERT_EQUAL(CT_DBC_OK, ctDbcSizeCheck(100000, 100000 + CT_DBC_RESERVE_BYTES, 0));
+    // Replacing an existing file frees its own space.
+    TEST_ASSERT_EQUAL(CT_DBC_NO_SPACE, ctDbcSizeCheck(100000, 50000, 0));
+    TEST_ASSERT_EQUAL(CT_DBC_OK, ctDbcSizeCheck(100000, 50000, 90000));
+}
+
+void test_dbc_scan_counts_messages_and_cap(void) {
+    CtDbcScan s; ctDbcScanInit(s);
+    ctDbcScanLine(s, "VERSION \"\"");
+    ctDbcScanLine(s, "BO_ 100 MSG_A: 8 ECU");
+    ctDbcScanLine(s, " SG_ Speed : 0|16@1+ (1,0) [0|0] \"\" X");
+    ctDbcScanLine(s, "\tBO_ 200 MSG_B: 8 ECU\r");
+    ctDbcScanLine(s, "BO_TX_BU_ 100 : ECU;");   // not a message record
+    TEST_ASSERT_EQUAL_UINT32(2, s.messages);
+    TEST_ASSERT_EQUAL(CT_DBC_OK, ctDbcScanVerdict(s));
+
+    CtDbcScan e; ctDbcScanInit(e);
+    ctDbcScanLine(e, "VERSION \"\"");
+    TEST_ASSERT_EQUAL(CT_DBC_NO_MESSAGES, ctDbcScanVerdict(e));
+
+    CtDbcScan m; ctDbcScanInit(m);
+    for (uint32_t i = 0; i < CT_DBC_MAX_MESSAGES; ++i) ctDbcScanLine(m, "BO_ 1 M: 8 E");
+    TEST_ASSERT_EQUAL(CT_DBC_OK, ctDbcScanVerdict(m));
+    ctDbcScanLine(m, "BO_ 2 M: 8 E");
+    TEST_ASSERT_EQUAL(CT_DBC_TOO_MANY_MESSAGES, ctDbcScanVerdict(m));
+}
+
+void test_dbc_scan_rejects_binary(void) {
+    CtDbcScan s; ctDbcScanInit(s);
+    ctDbcScanLine(s, "BO_ 100 MSG_A: 8 ECU");
+    ctDbcScanLine(s, "\x7f""ELF\x01\x02");
+    TEST_ASSERT_EQUAL(CT_DBC_BAD_CONTENT, ctDbcScanVerdict(s));
+    CtDbcScan t; ctDbcScanInit(t);
+    ctDbcScanLine(t, "BO_ 1 M: 8 E\t\r");   // TAB and CR are allowed
+    TEST_ASSERT_EQUAL(CT_DBC_OK, ctDbcScanVerdict(t));
+}
+
+void test_dbc_delete_decision(void) {
+    TEST_ASSERT_EQUAL(CT_DBC_DEL_REFUSE_BUILTIN, ctDbcDeleteDecision(true, false, true));
+    TEST_ASSERT_EQUAL(CT_DBC_DEL_NEEDS_CONFIRM, ctDbcDeleteDecision(false, true, false));
+    TEST_ASSERT_EQUAL(CT_DBC_DEL_ALLOW, ctDbcDeleteDecision(false, true, true));
+    TEST_ASSERT_EQUAL(CT_DBC_DEL_ALLOW, ctDbcDeleteDecision(false, false, false));
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_tx_guard_listen_only);
@@ -1114,5 +1193,11 @@ int main(int, char**) {
     RUN_TEST(test_sim_ecu_poll_validity_with_partial_ecu);
     RUN_TEST(test_login_lock_is_shared_and_expires);
     RUN_TEST(test_login_lock_survives_millis_wraparound);
+    RUN_TEST(test_dbc_name_rules);
+    RUN_TEST(test_dbc_path_fits_profile_field);
+    RUN_TEST(test_dbc_size_check);
+    RUN_TEST(test_dbc_scan_counts_messages_and_cap);
+    RUN_TEST(test_dbc_scan_rejects_binary);
+    RUN_TEST(test_dbc_delete_decision);
     return UNITY_END();
 }
