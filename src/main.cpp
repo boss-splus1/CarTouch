@@ -10,6 +10,8 @@
 #include <Arduino.h>
 #include <SPIFFS.h>
 #include <esp_task_wdt.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include "sd_storage.h"
 #include "buttons.h"
 
@@ -33,6 +35,7 @@
 #include "learn_engine.h"
 #include "active_profile_manager.h"
 #include "error_log.h"
+#include "ct_sync_policy.h"
 
 // ■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
 // □□□□□□□□□□ Global objects
@@ -285,12 +288,18 @@ void setup() {
         moduleStatusManager.setState(MODULE_CAN2, MODULE_ERROR);
     }
 
-    // 3b. Optional SD card (after CAN: SPI bus is already initialised).
+    // 3b. Initialise shared synchronisation for SD and Buttons
+    if (!ctSync().initMutex()) {
+        Serial.println("[INIT] Failed to initialise SD/Buttons sync mutex; some features may be unsafe");
+        getErrorLog()->log(LOG_CAT_SYSTEM, LOG_ERROR, "SD/Buttons sync mutex failed to initialise");
+    }
+
+    // 3c. Optional SD card (after CAN: SPI bus is already initialised).
     // Missing card or unset CS pin is normal and never blocks boot.
     sdStorage.begin();
     Serial.printf("[INIT] SD: %s\n", sdStorage.stateText());
 
-    // 3c. Optional physical keys (disabled until configured)
+    // 3d. Optional physical keys (disabled until configured)
     buttons.begin();
 
     // 4. OBD-II reader
@@ -611,7 +620,7 @@ static const char* learnStateName(LearnModeState state) {
 
 void processSerialCommand(const char* command) {
     if (strcmp(command, "help") == 0) {
-        Serial.println("Commands: help | status | config | can | obd | dtc read | dtc clear | dtc status | learn | record status | record start <1|2|both> | record stop | record delete <canNNNN.csv> | storage | sd status | sd cs <gpio|-1> | sd store <cat> <auto|internal|sd> | sd reset | btn status | btn off | btn gpio u d l r ok | btn adc pin u d l r ok | errors | control <command>");
+        Serial.println("Commands: help | status | memory | config | can | obd | dtc read | dtc clear | dtc status | learn | record status | record start <1|2|both> | record stop | record delete <canNNNN.csv> | storage | sd status | sd cs <gpio|-1> | sd store <cat> <auto|internal|sd> | sd reset | btn status | btn off | btn gpio u d l r ok | btn adc pin u d l r ok | errors | control <command>");
         Serial.println("Control commands use the same selected-profile, verification, Listen-Only, and rate-limit guards as Web/TFT.");
         return;
     }
@@ -665,6 +674,21 @@ void processSerialCommand(const char* command) {
                       webServer.isStarted() ? "started" : "stopped",
                       bleManager.isEnabled() ? "enabled" : "unavailable",
                       filesystemReady ? "SPIFFS-mounted" : "unavailable");
+        return;
+    }
+
+    if (strcmp(command, "memory") == 0) {
+        Serial.printf("Internal heap: free=%u minFreeSinceBoot=%u largestBlock=%u bytes\n",
+                      (unsigned)ESP.getFreeHeap(),
+                      (unsigned)ESP.getMinFreeHeap(),
+                      (unsigned)ESP.getMaxAllocHeap());
+        Serial.printf("PSRAM: total=%u free=%u minFreeSinceBoot=%u largestBlock=%u bytes\n",
+                      (unsigned)ESP.getPsramSize(),
+                      (unsigned)ESP.getFreePsram(),
+                      (unsigned)ESP.getMinFreePsram(),
+                      (unsigned)ESP.getMaxAllocPsram());
+        Serial.printf("Loop task stack high-water minimum free=%u bytes\n",
+                      (unsigned)uxTaskGetStackHighWaterMark(nullptr));
         return;
     }
 

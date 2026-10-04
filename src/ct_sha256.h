@@ -64,6 +64,16 @@ static inline void ctSha256Update(CtSha256& c, const uint8_t* data, size_t len) 
     }
 }
 
+static inline bool ctSha256HexValid(const char* digest) {
+    if (!digest || strlen(digest) != 64) return false;
+    for (size_t i = 0; i < 64; ++i) {
+        const char c = digest[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+              (c >= 'A' && c <= 'F'))) return false;
+    }
+    return true;
+}
+
 // Writes the 64-character lowercase hex digest plus NUL (out must hold 65 bytes).
 static inline void ctSha256FinishHex(CtSha256& c, char* out) {
     const uint64_t bits = c.totalBytes * 8u;
@@ -86,7 +96,7 @@ static inline void ctSha256FinishHex(CtSha256& c, char* out) {
 
 // Case-insensitive compare of two 64-character hex digests; false for any other length.
 static inline bool ctSha256HexEqual(const char* a, const char* b) {
-    if (!a || !b || strlen(a) != 64 || strlen(b) != 64) return false;
+    if (!ctSha256HexValid(a) || !ctSha256HexValid(b)) return false;
     for (int i = 0; i < 64; ++i) if ((a[i] | 0x20) != (b[i] | 0x20)) return false;
     return true;
 }

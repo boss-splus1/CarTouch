@@ -235,6 +235,7 @@ void CustomVehicleStore::_profileToJson(const CustomVehicleProfile& profile, Jso
     doc["name"]       = profile.name;
     doc["brand"]          = profile.brand;
     doc["model"]              = profile.model;
+    if (profile.dbcFileName[0]) doc["dbcFile"] = profile.dbcFileName;
     doc["year"]                   = profile.year;
     doc["revision"]               = profile.revision;
 
@@ -266,6 +267,12 @@ bool CustomVehicleStore::_jsonToProfile(JsonDocument& doc, CustomVehicleProfile&
     const char* nameStr  = doc["name"]  | "";
     const char* brandStr = doc["brand"] | "";
     const char* modelStr = doc["model"] | "";
+    JsonVariant dbcFileValue = doc["dbcFile"];
+    if (strict && !dbcFileValue.isNull() && !dbcFileValue.is<const char*>()) {
+        Serial.println("[CVS] Reject import: 'dbcFile' must be a string");
+        return false;
+    }
+    const char* dbcFileStr = dbcFileValue | "";
     int         yearVal  = doc["year"]  | 0;
     uint32_t    revisionVal = doc["revision"] | 0;
 
@@ -281,14 +288,20 @@ bool CustomVehicleStore::_jsonToProfile(JsonDocument& doc, CustomVehicleProfile&
             Serial.println("[CVS] Reject import: 'year' out of range"); return false;
         }
     }
+    if (strlen(dbcFileStr) >= sizeof(profile.dbcFileName) ||
+        (dbcFileStr[0] && !ctDbcNameValid(dbcFileStr))) {
+        Serial.println("[CVS] Reject profile: 'dbcFile' is invalid"); return false;
+    }
 
     profile.id = doc["id"] | 0;
     memset(profile.name,  0, sizeof(profile.name));
     memset(profile.brand, 0, sizeof(profile.brand));
     memset(profile.model, 0, sizeof(profile.model));
+    memset(profile.dbcFileName, 0, sizeof(profile.dbcFileName));
     strncpy(profile.name,  nameStr,  sizeof(profile.name)  - 1);
     strncpy(profile.brand, brandStr, sizeof(profile.brand) - 1);
     strncpy(profile.model, modelStr, sizeof(profile.model) - 1);
+    strncpy(profile.dbcFileName, dbcFileStr, sizeof(profile.dbcFileName) - 1);
     profile.year  = (uint16_t)yearVal;
     profile.revision = revisionVal;
     profile.inUse = true;
@@ -527,6 +540,32 @@ bool CustomVehicleStore::saveProfile(const CustomVehicleProfile& profile) {
     _summaryCache[toSave.id].inUse   = true;
 
     return _saveIndex();
+}
+
+bool CustomVehicleStore::setDbcFileName(uint8_t profileIndex, const char* fileName) {
+    if (!_initialized || profileIndex >= MAX_CUSTOM_VEHICLES ||
+        !_summaryCache[profileIndex].inUse || !fileName) return false;
+    const size_t length = strlen(fileName);
+    if (length > CT_DBC_NAME_MAX ||
+        (length != 0 && !ctDbcNameValid(fileName))) return false;
+
+    CustomVehicleProfile profile;
+    if (!loadProfile(profileIndex, profile)) return false;
+    memset(profile.dbcFileName, 0, sizeof(profile.dbcFileName));
+    memcpy(profile.dbcFileName, fileName, length);
+    return saveProfile(profile);
+}
+
+bool CustomVehicleStore::referencesDbcFile(const char* fileName, bool& referenced) {
+    referenced = false;
+    if (!_initialized || !ctDbcNameValid(fileName)) return false;
+    for (uint8_t i = 0; i < MAX_CUSTOM_VEHICLES; ++i) {
+        if (!_summaryCache[i].inUse) continue;
+        CustomVehicleProfile profile;
+        if (!loadProfile(i, profile)) return false;
+        if (strcmp(profile.dbcFileName, fileName) == 0) referenced = true;
+    }
+    return true;
 }
 
 // ○○○○○○○○○○○○○○○○○○○○○○○○○○○○○○

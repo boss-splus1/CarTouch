@@ -234,6 +234,44 @@ header h1 {
     margin-bottom: 6px;
 }
 
+.dbc-file-row {
+    border-top: 1px solid #34415c;
+    margin-top: 10px;
+    padding-top: 10px;
+    overflow-wrap: anywhere;
+}
+
+.dbc-file-row strong,
+.dbc-file-row span {
+    display: block;
+    margin-bottom: 4px;
+}
+
+.dbc-file-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.dbc-file-actions a,
+.dbc-file-actions button {
+    flex: 1;
+    min-width: 0;
+    padding: 8px;
+    border: 0;
+    border-radius: 6px;
+    background: #0f3460;
+    color: #eee;
+    text-align: center;
+    text-decoration: none;
+    cursor: pointer;
+}
+
+.dbc-file-actions button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
 .text-input {
     width: 100%;
     padding: 10px;

@@ -479,8 +479,364 @@ async function refreshDeviceInfo(){
     const obdCanBus=document.getElementById('obd-can-bus'); if(obdCanBus && (d.obdCanBus===0 || d.obdCanBus===1)) obdCanBus.value=String(d.obdCanBus);
     const vehicleCanBus=document.getElementById('vehicle-can-bus'); if(vehicleCanBus && (d.vehicleCanBus===0 || d.vehicleCanBus===1)) vehicleCanBus.value=String(d.vehicleCanBus);
     const learnCanBus=document.getElementById('learn-can-bus'); if(learnCanBus && (d.learnCanBus===0 || d.learnCanBus===1)) learnCanBus.value=String(d.learnCanBus);
+    updateStorageHealth(d);
     updateModuleStatusList(d.modules);
-  }catch(e){}
+  }catch(e){
+    console.error('Device status refresh failed:', e);
+    const storage=document.getElementById('storage-health');
+    if(storage) storage.textContent='Storage status unavailable';
+  }
+}
+
+function formatStorageBytes(bytes) {
+    const value = Number(bytes);
+    if (!Number.isFinite(value) || value < 0) return 'unknown';
+    if (value < 1024) return `${value} B`;
+    const units = ['KB', 'MB', 'GB'];
+    let size = value / 1024;
+    let unit = units[0];
+    for (let i = 1; size >= 1024 && i < units.length; ++i) {
+        size /= 1024;
+        unit = units[i];
+    }
+    return `${size.toFixed(1)} ${unit}`;
+}
+
+function updateStorageHealth(data) {
+    const element = document.getElementById('storage-health');
+    const choice = document.getElementById('dbc-storage-choice');
+    if (!element) return;
+    const internal = data.internalStorage || {};
+    const sd = data.sd || {};
+    const selected = data.storageChoice && data.storageChoice.db;
+    if (['auto', 'internal', 'sd'].includes(selected)) {
+        const changed = dbcStorageChoiceSaved !== selected;
+        dbcStorageChoiceSaved = selected;
+        if (changed && dbcProfilesCache.length) {
+            populateDbcProfileSelectors(dbcProfilesCache, dbcFilesCache);
+        }
+    }
+    if (choice && choice.dataset.pending !== '1' && ['auto', 'internal', 'sd'].includes(selected)) {
+        choice.value = selected;
+    }
+    const storageChoices = data.storageChoice || {};
+    [
+        ['prof', 'profile-storage-choice'],
+        ['rec', 'recording-storage-choice'],
+        ['bak', 'backup-storage-choice']
+    ].forEach(([category, id]) => {
+        const select = document.getElementById(id);
+        const value = storageChoices[category];
+        if (select && select.dataset.pending !== '1' && ['auto', 'internal', 'sd'].includes(value)) {
+            select.value = value;
+        }
+    });
+    const internalText = `Internal ${internal.state || 'unknown'}: ${formatStorageBytes(internal.freeBytes)} free / ${formatStorageBytes(internal.totalBytes)}`;
+    const sdText = `SD ${sd.state || 'unknown'}: ${formatStorageBytes(sd.freeBytes)} free / ${formatStorageBytes(sd.totalBytes)}`;
+    element.textContent = `${internalText} | ${sdText} | DBC: ${selected || 'auto'} | Profiles: ${storageChoices.prof || 'auto'} | Recordings: ${storageChoices.rec || 'auto'} | Backups: ${storageChoices.bak || 'auto'}`;
+}
+
+async function dbcRequestJson(url, options) {
+    const response = await fetch(url, { credentials: 'same-origin', ...options });
+    let result;
+    try {
+        result = await response.json();
+    } catch (error) {
+        throw new Error(`Server returned an invalid response (${response.status})`);
+    }
+    if (!response.ok) throw new Error(result.error || `Request failed (${response.status})`);
+    return result;
+}
+
+function setDbcManagerStatus(message, isError) {
+    const element = document.getElementById('dbc-manager-status');
+    if (!element) return;
+    element.textContent = message;
+    element.style.color = isError ? '#e74c3c' : '#aaa';
+}
+
+let dbcFilesCache = [];
+let dbcProfilesCache = [];
+let dbcStorageChoiceSaved = 'auto';
+
+function populateDbcProfileSelectors(profiles, files) {
+    const profileSelect = document.getElementById('dbc-profile-select');
+    const fileSelect = document.getElementById('dbc-profile-file');
+    const saveButton = document.getElementById('btn-dbc-profile-save');
+    if (!profileSelect || !fileSelect || !saveButton) return;
+    const previousId = profileSelect.value;
+    profileSelect.replaceChildren();
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = profiles.length ? 'Select a custom profile' : 'No custom profiles';
+    profileSelect.appendChild(placeholder);
+    profiles.forEach((profile) => {
+        const option = document.createElement('option');
+        option.value = String(profile.id);
+        option.textContent = [profile.name, profile.brand, profile.model].filter(Boolean).join(' — ');
+        profileSelect.appendChild(option);
+    });
+    if (profiles.some((profile) => String(profile.id) === previousId)) {
+        profileSelect.value = previousId;
+    } else if (profiles.length) {
+        profileSelect.value = String(profiles[0].id);
+    }
+
+    function updateFileOptions() {
+        const selectedProfile = profiles.find((profile) => String(profile.id) === profileSelect.value);
+        const currentName = selectedProfile && selectedProfile.dbcFile ? selectedProfile.dbcFile : '';
+        fileSelect.replaceChildren();
+        const none = document.createElement('option');
+        none.value = '';
+        none.textContent = 'No DBC';
+        fileSelect.appendChild(none);
+
+        const userFiles = files.filter((file) => !file.builtin);
+        const preferredLocation = dbcStorageChoiceSaved === 'sd' ? 'sd' : 'internal';
+        const byName = new Map();
+        userFiles.forEach((file) => {
+            if (!byName.has(file.name) || file.location === preferredLocation) byName.set(file.name, file);
+        });
+        byName.forEach((file, name) => {
+            const option = document.createElement('option');
+            option.value = name;
+            option.textContent = `${name} (${file.location})`;
+            fileSelect.appendChild(option);
+        });
+        if (currentName && !byName.has(currentName)) {
+            const missing = document.createElement('option');
+            missing.value = currentName;
+            missing.textContent = `${currentName} (unavailable — select No DBC to clear)`;
+            fileSelect.appendChild(missing);
+        }
+        fileSelect.value = currentName;
+        fileSelect.disabled = profiles.length === 0;
+        saveButton.disabled = profiles.length === 0;
+    }
+
+    profileSelect.disabled = profiles.length === 0;
+    profileSelect.onchange = updateFileOptions;
+    updateFileOptions();
+}
+
+function renderDbcFiles(files, truncated) {
+    const container = document.getElementById('dbc-file-list');
+    if (!container) return;
+    container.replaceChildren();
+    files.forEach((file) => {
+        const row = document.createElement('div');
+        row.className = 'dbc-file-row';
+        const title = document.createElement('strong');
+        title.textContent = `${file.name}${file.builtin ? ' (built-in)' : ''}`;
+        row.appendChild(title);
+
+        const details = document.createElement('span');
+        details.textContent = `${file.location} · ${formatStorageBytes(file.size)} · ${file.messages} messages`;
+        row.appendChild(details);
+        const provenance = document.createElement('span');
+        provenance.textContent = `Source: ${file.source || 'unknown'} · License: ${file.license || 'unverified'}`;
+        row.appendChild(provenance);
+        const actions = document.createElement('div');
+        actions.className = 'dbc-file-actions';
+
+        const exportLink = document.createElement('a');
+        const downloadQuery = new URLSearchParams({ name: file.name, location: file.location });
+        exportLink.href = `/api/dbc/download?${downloadQuery.toString()}`;
+        exportLink.textContent = 'Export';
+        exportLink.setAttribute('download', file.name);
+        actions.appendChild(exportLink);
+
+        if (!file.builtin) {
+            const removeButton = document.createElement('button');
+            removeButton.type = 'button';
+            removeButton.textContent = 'Delete';
+            removeButton.addEventListener('click', async () => {
+                if (!window.confirm(`Delete ${file.name} from ${file.location}? This cannot be undone.`)) return;
+                removeButton.disabled = true;
+                try {
+                    const body = new URLSearchParams({
+                        name: file.name,
+                        location: file.location,
+                        confirm: '1'
+                    });
+                    await dbcRequestJson('/api/dbc/delete', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: body.toString()
+                    });
+                    setDbcManagerStatus(`${file.name} deleted.`, false);
+                    await refreshDbcManager();
+                } catch (error) {
+                    setDbcManagerStatus(error.message, true);
+                    removeButton.disabled = false;
+                }
+            });
+            actions.appendChild(removeButton);
+        }
+        row.appendChild(actions);
+        container.appendChild(row);
+    });
+    if (truncated) {
+        const note = document.createElement('p');
+        note.className = 'muted';
+        note.textContent = 'The DBC list is truncated; not every stored file is shown.';
+        container.appendChild(note);
+    }
+}
+
+async function refreshDbcManager() {
+    try {
+        const [dbcResult, profileResult] = await Promise.all([
+            dbcRequestJson('/api/dbc/list'),
+            dbcRequestJson('/api/vehicles/custom')
+        ]);
+        const files = Array.isArray(dbcResult.files) ? dbcResult.files : [];
+        const profiles = Array.isArray(profileResult.profiles) ? profileResult.profiles : [];
+        dbcFilesCache = files;
+        dbcProfilesCache = profiles;
+        renderDbcFiles(files, !!dbcResult.truncated);
+        populateDbcProfileSelectors(profiles, files);
+        setDbcManagerStatus(`${files.length} DBC file(s) listed.`, false);
+    } catch (error) {
+        console.error('DBC manager refresh failed:', error);
+        setDbcManagerStatus(error.message, true);
+    }
+}
+
+function setupDbcManager() {
+    const storageChoice = document.getElementById('dbc-storage-choice');
+    const storageButton = document.getElementById('btn-dbc-storage-save');
+    const profileButton = document.getElementById('btn-dbc-profile-save');
+    const uploadButton = document.getElementById('btn-dbc-upload');
+    if (!storageChoice || !storageButton || !profileButton || !uploadButton) return;
+
+    storageChoice.addEventListener('change', () => {
+        storageChoice.dataset.pending = '1';
+    });
+    storageButton.addEventListener('click', async () => {
+        storageButton.disabled = true;
+        try {
+            const body = new URLSearchParams({ category: 'db', choice: storageChoice.value });
+            await dbcRequestJson('/api/storage', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: body.toString()
+            });
+            storageChoice.dataset.pending = '0';
+            setDbcManagerStatus('DBC storage preference saved.', false);
+            await refreshDeviceInfo();
+        } catch (error) {
+            setDbcManagerStatus(error.message, true);
+        } finally {
+            storageButton.disabled = false;
+        }
+    });
+
+    profileButton.addEventListener('click', async () => {
+        const profileId = document.getElementById('dbc-profile-select').value;
+        if (!profileId) {
+            setDbcManagerStatus('Select a custom profile first.', true);
+            return;
+        }
+        profileButton.disabled = true;
+        try {
+            const body = new URLSearchParams({
+                id: profileId,
+                dbcFile: document.getElementById('dbc-profile-file').value
+            });
+            await dbcRequestJson('/api/vehicles/custom/set-dbc', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: body.toString()
+            });
+            setDbcManagerStatus('Profile DBC setting saved.', false);
+            await refreshDbcManager();
+        } catch (error) {
+            setDbcManagerStatus(error.message, true);
+        } finally {
+            profileButton.disabled = false;
+        }
+    });
+
+    uploadButton.addEventListener('click', async () => {
+        const input = document.getElementById('dbc-upload-file');
+        const file = input && input.files && input.files[0];
+        if (!file) {
+            setDbcManagerStatus('Choose a .dbc file first.', true);
+            return;
+        }
+        uploadButton.disabled = true;
+        try {
+            const form = new FormData();
+            form.append('file', file, file.name);
+            const result = await dbcRequestJson('/api/dbc/upload', { method: 'POST', body: form });
+            setDbcManagerStatus(`Uploaded ${result.name} to ${result.location}.`, false);
+            input.value = '';
+            await Promise.all([refreshDbcManager(), refreshDeviceInfo()]);
+        } catch (error) {
+            setDbcManagerStatus(error.message, true);
+        } finally {
+            uploadButton.disabled = false;
+        }
+    });
+
+    refreshDbcManager();
+}
+
+function setupStorageSettings() {
+    const status = document.getElementById('storage-manager-status');
+    document.querySelectorAll('[data-storage-category]').forEach((select) => {
+        select.addEventListener('change', () => {
+            select.dataset.pending = '1';
+        });
+    });
+    document.querySelectorAll('[data-storage-save]').forEach((button) => {
+        button.addEventListener('click', async () => {
+            const category = button.dataset.storageSave;
+            const select = document.querySelector(`[data-storage-category="${category}"]`);
+            if (!select || !['prof', 'rec', 'bak'].includes(category)) return;
+            button.disabled = true;
+            try {
+                const body = new URLSearchParams({ category, choice: select.value });
+                await dbcRequestJson('/api/storage', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: body.toString()
+                });
+                select.dataset.pending = '0';
+                if (status) status.textContent = 'Storage preference saved.';
+                await refreshDeviceInfo();
+            } catch (error) {
+                if (status) status.textContent = error.message;
+            } finally {
+                button.disabled = false;
+            }
+        });
+    });
+    const reset = document.getElementById('btn-storage-reset');
+    if (reset) {
+        reset.addEventListener('click', async () => {
+            reset.disabled = true;
+            try {
+                await dbcRequestJson('/api/storage', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: new URLSearchParams({ reset: '1' }).toString()
+                });
+                document.querySelectorAll('[data-storage-category]').forEach((select) => {
+                    select.dataset.pending = '0';
+                });
+                const dbcChoice = document.getElementById('dbc-storage-choice');
+                if (dbcChoice) dbcChoice.dataset.pending = '0';
+                if (status) status.textContent = 'All storage choices reset to automatic.';
+                await refreshDeviceInfo();
+            } catch (error) {
+                if (status) status.textContent = error.message;
+            } finally {
+                reset.disabled = false;
+            }
+        });
+    }
 }
 
 
@@ -707,6 +1063,8 @@ document.addEventListener('DOMContentLoaded', function() {
     setInterval(refreshDeviceInfo, 5000);
     setupPasswordForm();
     setupCanConfigForm();
+    setupDbcManager();
+    setupStorageSettings();
     setupCanMonitor();
     setupCanRecorder();
     setupObdDtc();
@@ -807,7 +1165,11 @@ async function refreshCustomVehicleList() {
         const res = await fetch('/api/vehicles/custom', { credentials: 'same-origin' });
         if (!res.ok) return;
         const data = await res.json();
-        
+        if (Array.isArray(data.profiles)) {
+            dbcProfilesCache = data.profiles;
+            populateDbcProfileSelectors(data.profiles, dbcFilesCache);
+        }
+
         const listEl = document.getElementById('learn-profile-list');
         const selectEl = document.getElementById('learn-active-profile-select');
         if (!listEl || !selectEl) return;

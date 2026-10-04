@@ -15,6 +15,7 @@
 #include "ct_json_validation.h"
 #include "ct_battery.h"
 #include "ct_obd_validity.h"
+#include "ct_obd_formulas.h"
 #include "ct_listen_override.h"
 #include "ct_can_config.h"
 #include "ct_storage_guard.h"
@@ -25,6 +26,8 @@
 #include "ct_dbc_store.h"
 #include "ct_sha256.h"
 #include "ct_dbc_manifest.h"
+#include "ct_http_body_limit.h"
+#include "ct_sync_policy.h"
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -147,10 +150,30 @@ void test_partition_layout_must_fit_detected_flash(void) {
     TEST_ASSERT_FALSE(ctPartitionFitsFlash(0u, 16u * 1024u * 1024u));
 }
 void test_filesystem_ota_requires_mounted_empty_user_storage(void) {
-    TEST_ASSERT_TRUE(ctFilesystemOtaAllowed(true, false));
-    TEST_ASSERT_FALSE(ctFilesystemOtaAllowed(false, false));
-    TEST_ASSERT_FALSE(ctFilesystemOtaAllowed(true, true));
-    TEST_ASSERT_FALSE(ctFilesystemOtaAllowed(false, true));
+    TEST_ASSERT_TRUE(ctFilesystemOtaAllowed(true, false, false));
+    TEST_ASSERT_FALSE(ctFilesystemOtaAllowed(false, false, false));
+    TEST_ASSERT_FALSE(ctFilesystemOtaAllowed(true, true, false));
+    TEST_ASSERT_FALSE(ctFilesystemOtaAllowed(true, false, true));
+    TEST_ASSERT_FALSE(ctFilesystemOtaAllowed(false, true, true));
+}
+void test_http_body_limits_bound_forms_and_stream_imports(void) {
+    const size_t formLimit = 2048;
+    const size_t importLimit = 8192 * 3 + 32;
+    const size_t dbcLimit = 400 * 1024 + 2048;
+    TEST_ASSERT_EQUAL(formLimit,
+                      ctHttpBodyLimitForPath("/api/storage", formLimit, importLimit, dbcLimit));
+    TEST_ASSERT_EQUAL(importLimit,
+                      ctHttpBodyLimitForPath("/api/vehicles/custom/import",
+                                             formLimit, importLimit, dbcLimit));
+    TEST_ASSERT_EQUAL(dbcLimit,
+                      ctHttpBodyLimitForPath("/api/dbc/upload",
+                                             formLimit, importLimit, dbcLimit));
+    TEST_ASSERT_EQUAL(0,
+                      ctHttpBodyLimitForPath("/update", formLimit, importLimit, dbcLimit));
+    TEST_ASSERT_FALSE(ctHttpBodyExceedsLimit(formLimit, false, formLimit));
+    TEST_ASSERT_TRUE(ctHttpBodyExceedsLimit(formLimit + 1, false, formLimit));
+    TEST_ASSERT_TRUE(ctHttpBodyExceedsLimit(0, true, formLimit));
+    TEST_ASSERT_FALSE(ctHttpBodyExceedsLimit(0, true, 0));
 }
 void test_can_service_initializes_each_bus_independently(void) {
     MockCanInterface can0;
@@ -765,6 +788,9 @@ void test_sd_cs_pin_validation(void) {
     TEST_ASSERT_FALSE(ctSdCsPinAllowed(-1, used, 3));
     TEST_ASSERT_FALSE(ctSdCsPinAllowed(0, used, 3));    // strapping
     TEST_ASSERT_FALSE(ctSdCsPinAllowed(19, used, 3));   // USB
+    TEST_ASSERT_FALSE(ctSdCsPinAllowed(22, used, 3));   // nonexistent on ESP32-S3
+    TEST_ASSERT_FALSE(ctSdCsPinAllowed(43, used, 3));   // UART0 / serial console
+    TEST_ASSERT_FALSE(ctSdCsPinAllowed(44, used, 3));   // UART0 / serial console
     TEST_ASSERT_FALSE(ctSdCsPinAllowed(30, used, 3));   // flash/PSRAM
     TEST_ASSERT_FALSE(ctSdCsPinAllowed(14, used, 3));   // already used
     TEST_ASSERT_FALSE(ctSdCsPinAllowed(49, used, 3));
@@ -888,6 +914,21 @@ void test_obd_value_freshness_survives_millis_wraparound(void) {
     TEST_ASSERT_FALSE(ctObdValueFresh(true, last, 0x00002000u, CT_OBD_STALE_MS));
 }
 
+void test_obd_pid_conversion_formulas(void) {
+    TEST_ASSERT_EQUAL_UINT16(1726, ctObdEngineRpm(0x1A, 0xF8));
+    TEST_ASSERT_EQUAL_UINT16(0, ctObdEngineRpm(0, 0));
+    TEST_ASSERT_EQUAL_UINT8(0, ctObdVehicleSpeed(0));
+    TEST_ASSERT_EQUAL_UINT8(255, ctObdVehicleSpeed(255));
+    TEST_ASSERT_EQUAL_INT8(-40, ctObdCoolantTemp(0));
+    TEST_ASSERT_EQUAL_INT8(0, ctObdCoolantTemp(40));
+    TEST_ASSERT_EQUAL_INT8(60, ctObdCoolantTemp(100));
+    TEST_ASSERT_EQUAL_UINT8(0, ctObdPercent(0));
+    TEST_ASSERT_EQUAL_UINT8(50, ctObdPercent(128));
+    TEST_ASSERT_EQUAL_UINT8(100, ctObdPercent(255));
+    TEST_ASSERT_EQUAL_UINT16(0x1234, ctObdEngineRuntime(0x12, 0x34));
+    TEST_ASSERT_EQUAL_FLOAT(5.0f, ctObdControlModuleVoltage(0x13, 0x88));
+}
+
 void test_obd_validity_mask_bits_are_independent(void) {
     const uint8_t mask = CT_VD_RPM | CT_VD_BATTERY;
     TEST_ASSERT_TRUE(ctVdValid(mask, CT_VD_RPM));
@@ -909,7 +950,7 @@ void test_learn_listen_only_override_is_never_persisted(void) {
 
 // ---- Simulated ECU (test/test_native/ecu_sim.h): OBD without a car ----
 
-// Same decode as obd2_reader.cpp for PID 0x0C: ((A*256)+B)/4.
+// PID 0x0C decoding uses the same production conversion helper as the reader.
 static bool simReadRpm(SimEcuMode mode, float& rpm) {
     const uint8_t value[2] = { 0x1A, 0xF8 };    // 6904 / 4 = 1726 rpm
     SimFrame f;
@@ -918,7 +959,7 @@ static bool simReadRpm(SimEcuMode mode, float& rpm) {
     CtObdSingleFrame p;
     if (!ctParseObdSingleFrame(f.data, f.length, 0x41, 0x0C, p)) return false;
     if (p.dataOffset + 2 > f.length) return false;
-    rpm = ((f.data[p.dataOffset] * 256.0f) + f.data[p.dataOffset + 1]) / 4.0f;
+    rpm = ctObdEngineRpm(f.data[p.dataOffset], f.data[p.dataOffset + 1]);
     return true;
 }
 
@@ -1166,6 +1207,9 @@ void test_sha256_boundary_lengths_and_hex_compare(void) {
     TEST_ASSERT_FALSE(ctSha256HexEqual(h55, h56));
     TEST_ASSERT_FALSE(ctSha256HexEqual(h55, "abc"));
     TEST_ASSERT_FALSE(ctSha256HexEqual(nullptr, h55));
+    TEST_ASSERT_TRUE(ctSha256HexValid(h55));
+    TEST_ASSERT_FALSE(ctSha256HexValid("invalid"));
+    TEST_ASSERT_FALSE(ctSha256HexValid("000000000000000000000000000000000000000000000000000000000000000g"));
 }
 
 void test_dbc_manifest_parses_real_builtin_line(void) {
@@ -1194,6 +1238,9 @@ void test_dbc_manifest_roundtrip(void) {
     TEST_ASSERT_EQUAL_UINT32(a.size, b.size);
     TEST_ASSERT_EQUAL_UINT32(a.messages, b.messages);
     TEST_ASSERT_EQUAL_STRING(a.sha256, b.sha256);
+    TEST_ASSERT_EQUAL_STRING("unknown", b.time);
+    TEST_ASSERT_EQUAL_STRING("user", b.source);
+    TEST_ASSERT_EQUAL_STRING("unverified", b.license);
     char tiny[20];
     TEST_ASSERT_EQUAL_UINT32(0, ctDbcManifestFormatLine(a, tiny, sizeof(tiny)));
     TEST_ASSERT_EQUAL_CHAR('\0', tiny[0]);
@@ -1223,6 +1270,35 @@ void test_dbc_manifest_rejects_bad_lines(void) {
     TEST_ASSERT_FALSE(ctDbcManifestParseLine(nullptr, e));
 }
 
+// ---- SD and Buttons GPIO conflict detection ----
+void test_sync_policy_sd_cs_vs_button_gpio_no_conflict(void) {
+    const int btnPins[5] = {1, 2, 3, 4, 5};
+    TEST_ASSERT_TRUE(ctSync().validateSdCsVsButtons(10, btnPins));
+    TEST_ASSERT_TRUE(ctSync().validateSdCsVsButtons(-1, btnPins));
+    TEST_ASSERT_TRUE(ctSync().validateSdCsVsButtons(0, nullptr));
+}
+
+void test_sync_policy_sd_cs_conflicts_with_button_gpio(void) {
+    const int btnPins[5] = {1, 2, 3, 4, 5};
+    TEST_ASSERT_FALSE(ctSync().validateSdCsVsButtons(1, btnPins));
+    TEST_ASSERT_FALSE(ctSync().validateSdCsVsButtons(3, btnPins));
+    TEST_ASSERT_FALSE(ctSync().validateSdCsVsButtons(5, btnPins));
+}
+
+void test_sync_policy_buttons_gpio_vs_sd_cs_no_conflict(void) {
+    const int btnPins[5] = {1, 2, 3, 4, 5};
+    TEST_ASSERT_TRUE(ctSync().validateButtonsVsGivenSdCs(btnPins, 10));
+    TEST_ASSERT_TRUE(ctSync().validateButtonsVsGivenSdCs(btnPins, -1));
+    TEST_ASSERT_TRUE(ctSync().validateButtonsVsGivenSdCs(nullptr, 5));
+}
+
+void test_sync_policy_buttons_gpio_conflicts_with_sd_cs(void) {
+    const int btnPins[5] = {1, 2, 3, 4, 5};
+    TEST_ASSERT_FALSE(ctSync().validateButtonsVsGivenSdCs(btnPins, 1));
+    TEST_ASSERT_FALSE(ctSync().validateButtonsVsGivenSdCs(btnPins, 4));
+    TEST_ASSERT_FALSE(ctSync().validateButtonsVsGivenSdCs(btnPins, 5));
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_tx_guard_listen_only);
@@ -1234,6 +1310,7 @@ int main(int, char**) {
     RUN_TEST(test_mcp2515_supported_bitrates);
     RUN_TEST(test_partition_layout_must_fit_detected_flash);
     RUN_TEST(test_filesystem_ota_requires_mounted_empty_user_storage);
+    RUN_TEST(test_http_body_limits_bound_forms_and_stream_imports);
     RUN_TEST(test_can_service_initializes_each_bus_independently);
     RUN_TEST(test_can_service_starts_with_can1_only);
     RUN_TEST(test_can_service_reports_unavailable_when_both_fail);
@@ -1288,6 +1365,7 @@ int main(int, char**) {
     RUN_TEST(test_obd_value_never_answered_is_not_valid);
     RUN_TEST(test_obd_value_goes_stale_after_limit);
     RUN_TEST(test_obd_value_freshness_survives_millis_wraparound);
+    RUN_TEST(test_obd_pid_conversion_formulas);
     RUN_TEST(test_obd_validity_mask_bits_are_independent);
     RUN_TEST(test_learn_listen_only_override_is_never_persisted);
     RUN_TEST(test_sim_ecu_normal_reply_decodes_rpm);
@@ -1309,5 +1387,9 @@ int main(int, char**) {
     RUN_TEST(test_dbc_manifest_parses_real_builtin_line);
     RUN_TEST(test_dbc_manifest_roundtrip);
     RUN_TEST(test_dbc_manifest_rejects_bad_lines);
+    RUN_TEST(test_sync_policy_sd_cs_vs_button_gpio_no_conflict);
+    RUN_TEST(test_sync_policy_sd_cs_conflicts_with_button_gpio);
+    RUN_TEST(test_sync_policy_buttons_gpio_vs_sd_cs_no_conflict);
+    RUN_TEST(test_sync_policy_buttons_gpio_conflicts_with_sd_cs);
     return UNITY_END();
 }

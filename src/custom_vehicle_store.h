@@ -59,6 +59,10 @@ public:
     /** Saves a full profile (create or overwrite); also updates the index. */
     bool saveProfile(const CustomVehicleProfile& profile);
 
+    /** Changes or clears the optional user DBC reference for a profile. */
+    bool setDbcFileName(uint8_t profileIndex, const char* fileName);
+    bool referencesDbcFile(const char* fileName, bool& referenced);
+
     /**
      * Creates a new empty profile and reserves a free slot.
      * @param name     user-chosen name

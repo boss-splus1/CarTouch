@@ -3,6 +3,8 @@
 #include <SPI.h>
 #include <nvs.h>
 #include "config.h"
+#include "buttons.h"
+#include "ct_sync_policy.h"
 
 SdStorage sdStorage;
 
@@ -73,11 +75,20 @@ uint64_t SdStorage::freeBytes() const {
 
 bool SdStorage::setCsPin(int pin) {
     if (pin >= 0) {
-        AppConfig* c = getConfig();
+        const AppConfig* c = getConfig();
         const int inUse[] = { PIN_TFT_CS, PIN_TFT_DC, PIN_TFT_RST, PIN_TFT_MOSI, PIN_TFT_SCLK,
                               PIN_TFT_MISO, PIN_TFT_BL, PIN_TOUCH_CS, c->canTxPin, c->canRxPin,
                               c->can1CsPin, c->can1IntPin };
         if (!ctSdCsPinAllowed(pin, inUse, sizeof(inUse) / sizeof(inUse[0]))) return false;
+        // Cross-check against button GPIO configuration
+        int btnPins[5] = {-1, -1, -1, -1, -1};
+        if (buttons.mode() == Buttons::GPIO_MODE) {
+            for (uint8_t i = 0; i < 5; i++) btnPins[i] = buttons.pin(i);
+        }
+        if (!ctSync().validateSdCsVsButtons(pin, btnPins)) {
+            Serial.println("[SD] CS pin conflicts with button GPIO configuration");
+            return false;
+        }
     }
     nvs_handle_t h;
     if (!nvsOpen(h, true)) return false;

@@ -8,6 +8,7 @@
 #include "ct_obd_parser.h"
 #include "ct_time.h"
 #include "ct_obd_validity.h"
+#include "ct_obd_formulas.h"
 
 // ■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
 // □□□□□□□□□□ OBD-II constants
@@ -158,7 +159,7 @@ bool OBD2Reader::requestPID(uint8_t pid, ObdResponse& response) {
     }
 
     const uint8_t dataLength = (uint8_t)(parsed.payloadLength - 2);
-    if (dataLength == 0 || dataLength > sizeof(response.data)) {
+    if (dataLength > sizeof(response.data)) {
         _lastError = 3;
         response.success = false;
         return false;
@@ -182,7 +183,7 @@ uint16_t OBD2Reader::readEngineRPM() {
     ObdResponse response;
     if (!requestPID(OBD_PID_ENGINE_RPM, response)) return 0;
     if (response.length >= 2) {
-        return ((uint16_t)response.data[0] * 256 + response.data[1]) / 4;
+        return ctObdEngineRpm(response.data[0], response.data[1]);
     }
     return 0;
 }
@@ -191,7 +192,7 @@ uint8_t OBD2Reader::readVehicleSpeed() {
     ObdResponse response;
     if (!requestPID(OBD_PID_VEHICLE_SPEED, response)) return 0;
     if (response.length >= 1) {
-        return response.data[0];
+        return ctObdVehicleSpeed(response.data[0]);
     }
     return 0;
 }
@@ -200,7 +201,7 @@ int8_t OBD2Reader::readCoolantTemp() {
     ObdResponse response;
     if (!requestPID(OBD_PID_COOLANT_TEMP, response)) return -40;
     if (response.length >= 1) {
-        return response.data[0] - 40;
+        return ctObdCoolantTemp(response.data[0]);
     }
     return -40;
 }
@@ -209,7 +210,7 @@ uint8_t OBD2Reader::readThrottlePosition() {
     ObdResponse response;
     if (!requestPID(OBD_PID_THROTTLE_POS, response)) return 0;
     if (response.length >= 1) {
-        return (uint8_t)((float)response.data[0] * 100.0f / 255.0f);
+        return ctObdPercent(response.data[0]);
     }
     return 0;
 }
@@ -218,7 +219,7 @@ uint8_t OBD2Reader::readFuelLevel() {
     ObdResponse response;
     if (!requestPID(OBD_PID_FUEL_LEVEL, response)) return 0;
     if (response.length >= 1) {
-        return (uint8_t)((float)response.data[0] * 100.0f / 255.0f);
+        return ctObdPercent(response.data[0]);
     }
     return 0;
 }
@@ -227,7 +228,7 @@ uint16_t OBD2Reader::readEngineRuntime() {
     ObdResponse response;
     if (!requestPID(OBD_PID_RUNTIME, response)) return 0;
     if (response.length >= 2) {
-        return ((uint16_t)response.data[0] * 256 + response.data[1]);
+        return ctObdEngineRuntime(response.data[0], response.data[1]);
     }
     return 0;
 }
@@ -236,8 +237,7 @@ float OBD2Reader::readControlModuleVoltage() {
     ObdResponse response;
     if (!requestPID(OBD_PID_BATTERY_VOLT, response)) return 0.0f;
     if (response.length >= 2) {
-        // SAE J1979 PID 0x42: (A*256+B) / 1000 volts.
-        return ((uint16_t)response.data[0] * 256 + response.data[1]) / 1000.0f;
+        return ctObdControlModuleVoltage(response.data[0], response.data[1]);
     }
     return 0.0f;
 }
@@ -282,30 +282,27 @@ void OBD2Reader::_applyPidToData(uint8_t pid, const ObdResponse& resp, VehicleDa
     switch (pid) {
         case OBD_PID_ENGINE_RPM:
             if (resp.length >= 2)
-                data.engineRPM = ((uint16_t)resp.data[0] * 256 + resp.data[1]) / 4;
+                data.engineRPM = ctObdEngineRpm(resp.data[0], resp.data[1]);
             break;
         case OBD_PID_VEHICLE_SPEED:
-            if (resp.length >= 1) data.vehicleSpeed = resp.data[0];
+            if (resp.length >= 1) data.vehicleSpeed = ctObdVehicleSpeed(resp.data[0]);
             break;
         case OBD_PID_COOLANT_TEMP:
-            if (resp.length >= 1) data.coolantTemp = (int8_t)(resp.data[0] - 40);
+            if (resp.length >= 1) data.coolantTemp = ctObdCoolantTemp(resp.data[0]);
             break;
         case OBD_PID_THROTTLE_POS:
-            if (resp.length >= 1)
-                data.throttlePos = (uint8_t)((float)resp.data[0] * 100.0f / 255.0f);
+            if (resp.length >= 1) data.throttlePos = ctObdPercent(resp.data[0]);
             break;
         case OBD_PID_FUEL_LEVEL:
-            if (resp.length >= 1)
-                data.fuelLevel = (uint8_t)((float)resp.data[0] * 100.0f / 255.0f);
+            if (resp.length >= 1) data.fuelLevel = ctObdPercent(resp.data[0]);
             break;
         case OBD_PID_RUNTIME:
             if (resp.length >= 2)
-                data.engineRuntime = ((uint16_t)resp.data[0] * 256 + resp.data[1]);
+                data.engineRuntime = ctObdEngineRuntime(resp.data[0], resp.data[1]);
             break;
         case OBD_PID_BATTERY_VOLT:
             if (resp.length >= 2)
-                data.batteryVoltage =
-                    ((uint16_t)resp.data[0] * 256 + resp.data[1]) / 1000.0f;
+                data.batteryVoltage = ctObdControlModuleVoltage(resp.data[0], resp.data[1]);
             break;
     }
 }
@@ -368,7 +365,7 @@ void OBD2Reader::_pollCheckResponse() {
         }
 
         const uint8_t dataLength = (uint8_t)(parsed.payloadLength - 2);
-        if (dataLength == 0 || dataLength > 6) continue;
+        if (dataLength > 6) continue;
 
         ObdResponse resp;
         resp.pid = pid;

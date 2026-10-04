@@ -22,12 +22,64 @@
 #include <Update.h>
 #include "ct_password.h"
 #include "ct_ota_header.h"
+#include "ct_sha256.h"
 
 #include "ct_hex_parser.h"
 #include "ct_index_parser.h"
 #include "ct_battery.h"
 #include "ct_obd_validity.h"
 #include "ct_can_record.h"
+#include "dbc_store.h"
+#include "ct_http_body_limit.h"
+#include <stdlib.h>
+
+namespace {
+static const size_t DBC_LIST_LIMIT = 64;
+static const size_t DBC_HTTP_BODY_LIMIT = CT_DBC_MAX_BYTES + 2048u;
+static const size_t HTTP_FORM_BODY_LIMIT = 2048u;
+static const size_t PROFILE_IMPORT_BODY_LIMIT = MAX_IMPORT_JSON_LEN * 3u + 32u;
+static CtSha256 gOtaSha256;
+static char gOtaExpectedSha256[65] = {};
+
+class HttpBodyLimitHandler : public AsyncWebHandler {
+public:
+    bool canHandle(AsyncWebServerRequest* request) const override {
+        const size_t limit = ctHttpBodyLimitForPath(
+            request->url().c_str(), HTTP_FORM_BODY_LIMIT,
+            PROFILE_IMPORT_BODY_LIMIT, DBC_HTTP_BODY_LIMIT);
+        return ctHttpBodyExceedsLimit(request->contentLength(),
+                                      request->hasHeader("Transfer-Encoding"),
+                                      limit);
+    }
+
+    void handleRequest(AsyncWebServerRequest* request) override {
+        request->send(413, "application/json",
+                      "{\"error\":\"Request body exceeds the maximum accepted size\"}");
+    }
+};
+
+struct DbcUploadRequestState {
+    int httpStatus;
+    bool started;
+    bool dataComplete;
+    bool complete;
+    char error[112];
+    char name[CT_DBC_NAME_MAX + 1];
+    CtStorageLoc location;
+};
+
+static void setDbcUploadError(DbcUploadRequestState& state, int status,
+                              const char* message) {
+    state.httpStatus = status;
+    state.complete = false;
+    strncpy(state.error, message ? message : "DBC upload failed", sizeof(state.error) - 1);
+    state.error[sizeof(state.error) - 1] = '\0';
+}
+
+static const char* dbcLocationName(CtStorageLoc location) {
+    return location == CT_LOC_SD ? "sd" : "internal";
+}
+}
 
 static bool parseHexUint32(const char* text, uint32_t& value, size_t maxDigits) {
     return ctParseHexUint32(text, value, maxDigits);
@@ -41,9 +93,18 @@ static bool parseHttpProfileIndex(const String& text, uint8_t& index) {
     return ctParseBoundedIndex(text.c_str(), MAX_CUSTOM_VEHICLES, index);
 }
 
-static bool canReplaceFilesystemWithoutCustomProfiles() {
+static bool canReplaceFilesystemWithoutUserData() {
     const bool filesystemMounted = SPIFFS.totalBytes() != 0;
-    if (!filesystemMounted) return ctFilesystemOtaAllowed(false, false);
+    if (!filesystemMounted) return ctFilesystemOtaAllowed(false, false, false);
+
+    const char* userDbcManifestPaths[] = {
+        "/dbc_user.json",
+        "/dbc_user.json.tmp",
+        "/dbc_user.json.bak"
+    };
+    for (const char* path : userDbcManifestPaths) {
+        if (SPIFFS.exists(path)) return ctFilesystemOtaAllowed(true, false, true);
+    }
 
     const char* suffixes[] = {".json", ".json.tmp", ".json.bak"};
     for (uint8_t index = 0; index < MAX_CUSTOM_VEHICLES; ++index) {
@@ -54,7 +115,7 @@ static bool canReplaceFilesystemWithoutCustomProfiles() {
         };
         for (const String& prefix : prefixes) {
             for (const char* suffix : suffixes) {
-                if (SPIFFS.exists(prefix + suffix)) return ctFilesystemOtaAllowed(true, true);
+                if (SPIFFS.exists(prefix + suffix)) return ctFilesystemOtaAllowed(true, true, false);
             }
         }
     }
@@ -68,13 +129,13 @@ static bool canReplaceFilesystemWithoutCustomProfiles() {
             entry.close();
             if (recording) {
                 root.close();
-                return ctFilesystemOtaAllowed(true, true);
+                return ctFilesystemOtaAllowed(true, true, false);
             }
             entry = root.openNextFile();
         }
         root.close();
     }
-    return ctFilesystemOtaAllowed(true, false);
+    return ctFilesystemOtaAllowed(true, false, false);
 }
 
 static bool parseJsonBoundedIndex(JsonVariantConst value, uint8_t limit, uint8_t& index) {
@@ -104,23 +165,25 @@ body{font-family:system-ui,sans-serif;background:#0f1a30;color:#eee;margin:0;pad
 .card{background:#16213e;border-radius:10px;padding:16px;margin-bottom:14px}
 h3{margin:0 0 10px}.muted{opacity:.75;font-size:.9rem}input[type=file]{width:100%;margin:10px 0}button{width:100%;padding:12px;border:0;border-radius:8px;background:#e94560;color:#fff;font-size:1rem}button:disabled{opacity:.5}progress{width:100%;height:14px;margin-top:8px}.msg{margin-top:8px;font-size:.9rem}.warn{color:#f5a623;font-size:.85rem}a{color:#7fb3ff}
 </style></head><body>
-<div class="card"><h3>Firmware Update</h3><p class="muted">Upload a firmware .bin file. Do not power off the device during the update.</p>
-<input type="file" id="f-fw" accept=".bin"><button id="b-fw">Upload and Install Firmware</button>
+<div class="card"><h3>Firmware Update</h3><p class="muted">Upload a firmware .bin file and enter the SHA-256 from its matching .sha256 file. Do not power off the device during the update.</p>
+<input type="file" id="f-fw" accept=".bin"><input type="text" id="h-fw" maxlength="64" autocomplete="off" placeholder="Expected SHA-256 (64 hex characters)"><button id="b-fw">Upload and Install Firmware</button>
 <progress id="p-fw" value="0" max="100" hidden></progress><div class="msg" id="m-fw"></div></div>
-<div class="card"><h3>Web Filesystem Update</h3><p class="warn">Filesystem updates are blocked while custom profiles, recovery files, or CAN recordings exist. Export and remove them before retrying; manually flashing a filesystem image replaces all SPIFFS contents.</p>
-<input type="file" id="f-fs" accept=".bin"><button id="b-fs">Upload and Install Web Files</button>
+<div class="card"><h3>Web Filesystem Update</h3><p class="warn">Filesystem updates are blocked while custom profiles, CAN recordings, or user DBC manifests/recovery files exist in internal SPIFFS. Export profiles and user DBCs, and back up recordings elsewhere before removing protected data and retrying. A filesystem image replaces all SPIFFS contents; this update does not create an automatic backup.</p>
+<input type="file" id="f-fs" accept=".bin"><input type="text" id="h-fs" maxlength="64" autocomplete="off" placeholder="Expected SHA-256 (64 hex characters)"><button id="b-fs">Upload and Install Web Files</button>
 <progress id="p-fs" value="0" max="100" hidden></progress><div class="msg" id="m-fs"></div></div>
 <p><a href="/">← Back to CarTouch</a></p>
 <script>
 function up(t){
   var f=document.getElementById('f-'+t).files[0],m=document.getElementById('m-'+t),p=document.getElementById('p-'+t),b=document.getElementById('b-'+t);
   if(!f){m.textContent='Select a .bin file first.';return;}
+  var sha=document.getElementById('h-'+t).value.trim();
+  if(!/^[0-9a-fA-F]{64}$/.test(sha)){m.textContent='Enter the matching 64-character SHA-256 digest first.';return;}
   var x=new XMLHttpRequest(),fd=new FormData(); fd.append('file',f,f.name); b.disabled=true;p.hidden=false;p.value=0;
   m.textContent='Uploading... Do not close this page or power off the device.';
   x.upload.onprogress=function(e){if(e.lengthComputable)p.value=e.loaded*100/e.total;};
   x.onload=function(){b.disabled=false;var r;try{r=JSON.parse(x.responseText);}catch(e){r={ok:false,msg:'Invalid response ('+x.status+')'};}m.textContent=(r.ok?'✓ ':'✗ ')+r.msg;};
   x.onerror=function(){b.disabled=false;m.textContent='✗ Connection lost.';};
-  x.open('POST','/update?type='+t); x.send(fd);
+  x.open('POST','/update?type='+t+'&sha256='+encodeURIComponent(sha)); x.send(fd);
 }
 document.getElementById('b-fw').onclick=function(){up('fw');};
 document.getElementById('b-fs').onclick=function(){up('fs');};
@@ -386,6 +449,8 @@ void WebServerManager::_removeClientAuth(uint32_t clientId) {
 
 void WebServerManager::begin(uint16_t port) {
     Serial.println("[WEB] Starting web server...");
+
+    _server.addHandler(new HttpBodyLimitHandler());
 
     // -- WebSocket ----------------------------------------------------------
     _ws.onEvent([this](AsyncWebSocket* server, AsyncWebSocketClient* client,
@@ -691,6 +756,7 @@ void WebServerManager::begin(uint16_t port) {
 
     // -- Custom profile management routes (all behind the same auth) -----------------
     _registerCustomVehicleRoutes();
+    _registerDbcRoutes();
 
     _server.on("/app.js", HTTP_GET, [](AsyncWebServerRequest* request) {
         if (SPIFFS.exists("/app.js")) {
@@ -721,6 +787,235 @@ void WebServerManager::begin(uint16_t port) {
     if (isUsingDefaultPassword()) {
         Serial.println("[WEB] Please change the default web password from Settings");
     }
+}
+
+void WebServerManager::_registerDbcRoutes() {
+    _server.on("/api/dbc/list", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        if (!_authenticate(request)) return;
+
+        CtDbcManifestEntry* entries = new (std::nothrow) CtDbcManifestEntry[DBC_LIST_LIMIT];
+        CtStorageLoc* locations = new (std::nothrow) CtStorageLoc[DBC_LIST_LIMIT];
+        if (!entries || !locations) {
+            delete[] entries;
+            delete[] locations;
+            request->send(503, "application/json", "{\"error\":\"Not enough memory to list DBC files\"}");
+            return;
+        }
+        size_t count = 0;
+        bool truncated = false;
+        if (!dbcStore.listFiles(entries, locations, DBC_LIST_LIMIT, count, truncated)) {
+            delete[] entries;
+            delete[] locations;
+            request->send(500, "application/json",
+                          "{\"error\":\"Could not read DBC manifest\"}");
+            return;
+        }
+
+        JsonDocument doc;
+        JsonArray files = doc["files"].to<JsonArray>();
+        for (size_t i = 0; i < count; ++i) {
+            JsonObject item = files.add<JsonObject>();
+            item["name"] = entries[i].name;
+            item["size"] = entries[i].size;
+            item["sha256"] = entries[i].sha256;
+            item["messages"] = entries[i].messages;
+            item["time"] = entries[i].time;
+            item["source"] = entries[i].source;
+            item["license"] = entries[i].license;
+            item["location"] = dbcLocationName(locations[i]);
+            item["builtin"] = strcmp(entries[i].source, "user") != 0;
+        }
+        doc["truncated"] = truncated;
+        String json;
+        serializeJson(doc, json);
+        delete[] entries;
+        delete[] locations;
+        request->send(200, "application/json", json);
+    });
+
+    _server.on("/api/dbc/upload", HTTP_POST,
+        [this](AsyncWebServerRequest* request) {
+            if (!_authenticate(request)) {
+                DbcUploadRequestState* state =
+                    static_cast<DbcUploadRequestState*>(request->_tempObject);
+                if (state && state->started && !state->complete) dbcStore.abortUpload();
+                request->_tempObject = nullptr;
+                free(state);
+                return;
+            }
+            DbcUploadRequestState* state =
+                static_cast<DbcUploadRequestState*>(request->_tempObject);
+            request->_tempObject = nullptr;
+            if (!state) {
+                request->send(400, "application/json",
+                              "{\"error\":\"No DBC file was received\"}");
+                return;
+            }
+            if (state->dataComplete && state->error[0] == '\0') {
+                if (!dbcStore.finishUpload()) {
+                    setDbcUploadError(*state, 400, dbcStore.errorText());
+                } else {
+                    state->location = dbcStore.uploadLocation();
+                    state->complete = true;
+                    state->httpStatus = 200;
+                }
+            }
+            if (state->started && !state->complete) dbcStore.abortUpload();
+            if (!state->complete) {
+                JsonDocument doc;
+                doc["ok"] = false;
+                doc["error"] = state->error[0] ? state->error : "Incomplete DBC upload";
+                String json;
+                serializeJson(doc, json);
+                request->send(state->httpStatus, "application/json", json);
+                free(state);
+                return;
+            }
+            JsonDocument doc;
+            doc["ok"] = true;
+            doc["name"] = state->name;
+            doc["location"] = dbcLocationName(state->location);
+            String json;
+            serializeJson(doc, json);
+            request->send(200, "application/json", json);
+            free(state);
+        },
+        [this](AsyncWebServerRequest* request, const String& filename,
+               size_t index, uint8_t* data, size_t len, bool final) {
+            if (index == 0) {
+                if (!_authenticate(request)) return;
+                DbcUploadRequestState* existing =
+                    static_cast<DbcUploadRequestState*>(request->_tempObject);
+                if (existing) {
+                    if (existing->started) dbcStore.abortUpload();
+                    setDbcUploadError(*existing, 400, "Only one DBC file may be uploaded per request");
+                    return;
+                }
+                DbcUploadRequestState* state =
+                    static_cast<DbcUploadRequestState*>(calloc(1, sizeof(DbcUploadRequestState)));
+                if (!state) return;
+                state->httpStatus = 400;
+                request->_tempObject = state;
+                if (request->contentLength() == 0 ||
+                    request->contentLength() > DBC_HTTP_BODY_LIMIT) {
+                    setDbcUploadError(*state, 413, "DBC upload request exceeds the size limit");
+                    return;
+                }
+                const uint32_t requestBytes = request->contentLength() > CT_DBC_MAX_BYTES
+                    ? CT_DBC_MAX_BYTES : static_cast<uint32_t>(request->contentLength());
+                if (!dbcStore.beginUploadStream(filename.c_str(), requestBytes)) {
+                    setDbcUploadError(*state, 400, dbcStore.errorText());
+                    return;
+                }
+                state->started = true;
+                request->onDisconnect([request]() {
+                    DbcUploadRequestState* upload =
+                        static_cast<DbcUploadRequestState*>(request->_tempObject);
+                    if (upload && upload->started && !upload->complete) dbcStore.abortUpload();
+                });
+                strncpy(state->name, filename.c_str(), sizeof(state->name) - 1);
+                state->name[sizeof(state->name) - 1] = '\0';
+            }
+
+            DbcUploadRequestState* state =
+                static_cast<DbcUploadRequestState*>(request->_tempObject);
+            if (!state || state->error[0] != '\0') return;
+            if (!state->started || (len && dbcStore.writeChunk(data, len) != len)) {
+                dbcStore.abortUpload();
+                setDbcUploadError(*state,
+                                  dbcStore.status() == DBC_STORE_INVALID_SIZE ? 413 : 400,
+                                  dbcStore.errorText());
+                return;
+            }
+            if (final) state->dataComplete = true;
+        });
+
+    _server.on("/api/dbc/download", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        if (!_authenticate(request)) return;
+        if (!request->hasParam("name") || !request->hasParam("location")) {
+            request->send(400, "application/json",
+                          "{\"error\":\"DBC name and location are required\"}");
+            return;
+        }
+        const String name = request->getParam("name")->value();
+        const String where = request->getParam("location")->value();
+        const CtStorageLoc location = where == "sd" ? CT_LOC_SD :
+                                      where == "internal" ? CT_LOC_INTERNAL : CT_LOC_NONE;
+        if (!ctDbcNameValid(name.c_str()) || location == CT_LOC_NONE) {
+            request->send(400, "application/json", "{\"error\":\"Invalid DBC name or location\"}");
+            return;
+        }
+
+        bool builtin = false;
+        if (!dbcStore.isBuiltinFile(name.c_str(), builtin)) {
+            request->send(500, "application/json", "{\"error\":\"Could not read DBC manifest\"}");
+            return;
+        }
+        if (builtin && location != CT_LOC_INTERNAL) {
+            request->send(404, "application/json", "{\"error\":\"DBC file not found\"}");
+            return;
+        }
+        if (!builtin && !dbcStore.verifyFile(name.c_str(), location)) {
+            request->send(409, "application/json",
+                          "{\"error\":\"DBC integrity check failed; export refused\"}");
+            return;
+        }
+
+        fs::FS* source = location == CT_LOC_SD ? static_cast<fs::FS*>(&SD) :
+                                                 static_cast<fs::FS*>(&SPIFFS);
+        char path[sizeof(CT_DBC_DIR) + CT_DBC_NAME_MAX];
+        if (!ctDbcBuildPath(name.c_str(), path, sizeof(path)) || !source->exists(path)) {
+            request->send(404, "application/json", "{\"error\":\"DBC file not found\"}");
+            return;
+        }
+        AsyncWebServerResponse* response =
+            request->beginResponse(*source, path, "application/octet-stream");
+        response->addHeader("Content-Disposition",
+                            String("attachment; filename=\"") + name + "\"");
+        request->send(response);
+    });
+
+    _server.on("/api/dbc/delete", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        if (!_authenticate(request)) return;
+        if (!request->hasArg("name") || !request->hasArg("location")) {
+            request->send(400, "application/json",
+                          "{\"error\":\"DBC name and location are required\"}");
+            return;
+        }
+        const String name = request->arg("name");
+        const String where = request->arg("location");
+        const CtStorageLoc location = where == "sd" ? CT_LOC_SD :
+                                      where == "internal" ? CT_LOC_INTERNAL : CT_LOC_NONE;
+        if (!ctDbcNameValid(name.c_str()) || location == CT_LOC_NONE) {
+            request->send(400, "application/json", "{\"error\":\"Invalid DBC name or location\"}");
+            return;
+        }
+        const bool confirmed = request->hasArg("confirm") && request->arg("confirm") == "1";
+        bool referenced = false;
+        if (_customStore && !_customStore->referencesDbcFile(name.c_str(), referenced)) {
+            request->send(500, "application/json",
+                          "{\"error\":\"Could not verify DBC profile references\"}");
+            return;
+        }
+        const bool active = _profileManager &&
+                            _profileManager->activeProfileUsesDbc(name.c_str());
+        if (referenced || active) {
+            request->send(409, "application/json",
+                          "{\"error\":\"Unassign this DBC from every custom profile before deleting it\"}");
+            return;
+        }
+        if (!dbcStore.deleteUserFile(name.c_str(), location, active, confirmed)) {
+            JsonDocument doc;
+            doc["ok"] = false;
+            doc["error"] = dbcStore.errorText();
+            String json;
+            serializeJson(doc, json);
+            request->send(dbcStore.status() == DBC_STORE_CONFIRMATION_REQUIRED ? 409 : 400,
+                          "application/json", json);
+            return;
+        }
+        request->send(200, "application/json", "{\"ok\":true}");
+    });
 }
 
 // ○○○○○○○○○○○○○○○○○○○○○○○○○○○○○○
@@ -756,6 +1051,13 @@ void WebServerManager::_registerCustomVehicleRoutes() {
                 item["model"]                  = summary.model;
                 item["year"]                     = summary.year;
                 item["commandCount"]                = summary.commandCount;
+                CustomVehicleProfile fullProfile;
+                if (!_customStore->loadProfile((uint8_t)i, fullProfile)) {
+                    request->send(500, "application/json",
+                                  "{\"error\":\"Could not read custom profile\"}");
+                    return;
+                }
+                item["dbcFile"] = fullProfile.dbcFileName;
             }
         }
 
@@ -953,6 +1255,24 @@ void WebServerManager::_registerCustomVehicleRoutes() {
         }
 
         String jsonBody = request->arg("json");
+        JsonDocument importedProfile;
+        DeserializationError importError = deserializeJson(importedProfile, jsonBody);
+        if (!importError && importedProfile["dbcFile"].is<const char*>()) {
+            const char* dbcName = importedProfile["dbcFile"].as<const char*>();
+            if (dbcName[0]) {
+                File verified;
+                CtStorageLoc location = CT_LOC_NONE;
+                bool isUserFile = false;
+                if (!ctDbcNameValid(dbcName) ||
+                    !dbcStore.openVerifiedUserFile(dbcName, verified, location, isUserFile) ||
+                    !isUserFile) {
+                    request->send(409, "application/json",
+                                  "{\"error\":\"Imported profile references a DBC that is unavailable or failed integrity validation\"}");
+                    return;
+                }
+                verified.close();
+            }
+        }
         uint8_t newIndex;
         bool ok = _customStore->importProfileJSON(jsonBody, newIndex);
         if (ok) {
@@ -1021,6 +1341,69 @@ void WebServerManager::_registerCustomVehicleRoutes() {
         request->send(ok ? 200 : 404, "application/json",
                       ok ? "{\"success\":true}" : "{\"success\":false,\"error\":\"Profile not found\"}");
     });
+
+    // POST /api/vehicles/custom/set-dbc - bind or clear a verified user DBC.
+    _server.on("/api/vehicles/custom/set-dbc", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        if (!_authenticate(request)) return;
+        if (!_customStore || !_profileManager ||
+            !request->hasArg("id") || !request->hasArg("dbcFile")) {
+            request->send(400, "application/json",
+                          "{\"error\":\"Profile ID and dbcFile are required\"}");
+            return;
+        }
+        uint8_t id;
+        if (!parseHttpProfileIndex(request->arg("id"), id)) {
+            request->send(400, "application/json", "{\"error\":\"Profile ID is invalid\"}");
+            return;
+        }
+
+        const String dbcName = request->arg("dbcFile");
+        if (dbcName.length() && !ctDbcNameValid(dbcName.c_str())) {
+            request->send(400, "application/json", "{\"error\":\"DBC file name is invalid\"}");
+            return;
+        }
+        if (dbcName.length()) {
+            File verified;
+            CtStorageLoc location = CT_LOC_NONE;
+            bool isUserFile = false;
+            if (!dbcStore.openVerifiedUserFile(dbcName.c_str(), verified, location, isUserFile) ||
+                !isUserFile) {
+                request->send(409, "application/json",
+                              "{\"error\":\"DBC file is unavailable or failed integrity validation\"}");
+                return;
+            }
+            verified.close();
+        }
+
+        CustomVehicleProfile previous;
+        if (!_customStore->loadProfile(id, previous)) {
+            request->send(404, "application/json", "{\"error\":\"Custom profile not found\"}");
+            return;
+        }
+        const bool active = _profileManager->getActiveKind() == ACTIVE_KIND_CUSTOM &&
+                            _profileManager->getActiveCustomIndex() == id;
+        if (!_customStore->setDbcFileName(id, dbcName.c_str())) {
+            request->send(500, "application/json", "{\"error\":\"Could not save DBC profile reference\"}");
+            return;
+        }
+        if (active && !_profileManager->selectCustomVehicle(id)) {
+            const bool referenceRestored =
+                _customStore->setDbcFileName(id, previous.dbcFileName);
+            const bool profileRestored =
+                referenceRestored && _profileManager->selectCustomVehicle(id);
+            if (!profileRestored) {
+                Serial.printf("[WebServer] ERROR: failed to restore active custom profile %u after DBC load failure\n",
+                              id);
+                request->send(500, "application/json",
+                              "{\"error\":\"DBC load failed and previous profile could not be restored; reselect the profile\"}");
+                return;
+            }
+            request->send(409, "application/json",
+                          "{\"error\":\"DBC could not be loaded; previous profile reference restored\"}");
+            return;
+        }
+        request->send(200, "application/json", "{\"success\":true}");
+    });
 }
 
 // ○○○○○○○○○○○○○○○○○○○○○○○○○○○○○○
@@ -1078,15 +1461,29 @@ void WebServerManager::_handleOtaUpload(AsyncWebServerRequest* request, const St
         _otaError = "";
         _otaBytes = 0;
         gOtaHeader.reset();
+        gOtaExpectedSha256[0] = '\0';
+        ctSha256Init(gOtaSha256);
         _otaIsFs  = request->hasParam("type") && request->getParam("type")->value() == "fs";
+
+        if (!request->hasParam("sha256", false)) {
+            _otaError = "SHA-256 query parameter is required";
+            return;
+        }
+        const String expectedHash = request->getParam("sha256", false)->value();
+        if (!ctSha256HexValid(expectedHash.c_str())) {
+            _otaError = "SHA-256 must contain exactly 64 hexadecimal characters";
+            return;
+        }
+        strncpy(gOtaExpectedSha256, expectedHash.c_str(), sizeof(gOtaExpectedSha256) - 1);
+        gOtaExpectedSha256[sizeof(gOtaExpectedSha256) - 1] = '\0';
 
         if (!ctPartitionFitsFlash(ESP.getFlashChipSize(), CT_REQUIRED_FLASH_BYTES)) {
             _otaError = "Update blocked: detected flash is smaller than the configured partition layout.";
             return;
         }
 
-        if (_otaIsFs && !canReplaceFilesystemWithoutCustomProfiles()) {
-            _otaError = "Filesystem update blocked: SPIFFS could not be verified or custom profiles exist. Export and remove profiles before retrying.";
+        if (_otaIsFs && !canReplaceFilesystemWithoutUserData()) {
+            _otaError = "Filesystem update blocked: SPIFFS is unavailable or contains custom profiles, CAN recordings, or user DBC data/recovery files. Export profiles and user DBCs and back up recordings elsewhere before removing protected data and retrying.";
             return;
         }
 
@@ -1141,12 +1538,20 @@ void WebServerManager::_handleOtaUpload(AsyncWebServerRequest* request, const St
             Update.abort();
             return;
         }
+        ctSha256Update(gOtaSha256, data, len);
         _otaBytes += len;
     }
 
     if (final) {
         if (!_otaIsFs && !gOtaHeader.done) {
             _otaError = "Firmware image is too short";
+            if (Update.isRunning()) Update.abort();
+            return;
+        }
+        char actualHash[65];
+        ctSha256FinishHex(gOtaSha256, actualHash);
+        if (!ctSha256HexEqual(actualHash, gOtaExpectedSha256)) {
+            _otaError = "SHA-256 mismatch: uploaded image does not match the supplied digest";
             if (Update.isRunning()) Update.abort();
             return;
         }
@@ -1178,7 +1583,9 @@ void WebServerManager::_handleOtaFinished(AsyncWebServerRequest* request) {
             err = (_otaBytes == 0) ? "No file received" : "Unknown error";
         }
         if (Update.isRunning()) Update.abort();
-        if (_otaIsFs) SPIFFS.begin(false);                                                   // Remount so the web server keeps working
+        if (_otaIsFs && !SPIFFS.begin(false)) {
+            Serial.println("[OTA] ERROR: SPIFFS remount failed after unsuccessful filesystem update");
+        }
         Serial.printf("[OTA] Failed: %s\n", err.c_str());
         JsonDocument errDoc;
         errDoc["ok"]  = false;
@@ -1190,6 +1597,7 @@ void WebServerManager::_handleOtaFinished(AsyncWebServerRequest* request) {
 
     _otaError = "";
     _otaBytes = 0;
+    gOtaExpectedSha256[0] = '\0';
 }
 
 // ○○○○○○○○○○○○○○○○○○○○○○○○○○○○○○
@@ -2013,6 +2421,12 @@ void WebServerManager::_handleAPIStatus(AsyncWebServerRequest* request) {
         sd["csPin"] = sdStorage.csPin();
         sd["totalBytes"] = (uint64_t)sdStorage.totalBytes();
         sd["freeBytes"] = (uint64_t)sdStorage.freeBytes();
+        JsonObject internal = doc["internalStorage"].to<JsonObject>();
+        const uint64_t internalTotal = SPIFFS.totalBytes();
+        const uint64_t internalUsed = SPIFFS.usedBytes();
+        internal["state"] = internalTotal > 0 ? "ready" : "unavailable";
+        internal["totalBytes"] = internalTotal;
+        internal["freeBytes"] = internalTotal > internalUsed ? internalTotal - internalUsed : 0;
         JsonObject st = doc["storageChoice"].to<JsonObject>();
         static const char* cats[] = { "db", "rec", "prof", "bak" };
         for (const char* c : cats) {

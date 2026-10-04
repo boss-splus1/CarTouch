@@ -70,8 +70,8 @@ bool CanRecorder::start(uint8_t busMask) {
 
     char fileName[16];
     bool foundName = false;
-    for (uint16_t index = 0; index < MAX_RECORDING_FILES; ++index) {
-        snprintf(fileName, sizeof(fileName), "/can%04u.csv", (unsigned)index);
+    for (uint16_t candidateIndex = 0; candidateIndex < MAX_RECORDING_FILES; ++candidateIndex) {
+        snprintf(fileName, sizeof(fileName), "/can%04u.csv", (unsigned)candidateIndex);
         // Unique across internal AND SD so delete/download need no location.
         const bool onInternal = _storageAvailable && SPIFFS.exists(fileName);
         const bool onSd = sdStorage.state() == SdStorage::READY && SD.exists(fileName);

@@ -61,6 +61,8 @@ public:
      */
     bool selectCustomVehicle(uint8_t profileIndex);
 
+    bool activeProfileUsesDbc(const char* fileName);
+
     ActiveVehicleKind getActiveKind();
 
     /**

@@ -232,6 +232,57 @@
                 <p id="wifi-ip">IP: 192.168.4.1</p>
             </div>
             <div class="settings-group">
+                <h3>DBC Database</h3>
+                <p class="muted">Upload DBC files from this device (maximum 400 KB per file). Built-in DBC files are read-only. Files referenced by any custom profile must be unassigned before deletion. Unknown source/license metadata remains unverified.</p>
+                <p id="storage-health" class="muted" aria-live="polite">Storage: loading…</p>
+                <label for="dbc-storage-choice">Preferred storage for new DBC files</label>
+                <select id="dbc-storage-choice" class="learn-select">
+                    <option value="auto">Automatic (internal, then SD)</option>
+                    <option value="internal">Internal flash</option>
+                    <option value="sd">SD card</option>
+                </select>
+                <button class="ctrl-btn" id="btn-dbc-storage-save" style="width:100%;min-height:42px;margin-top:8px;">Save DBC Storage</button>
+                <h4>Other data locations</h4>
+                <label for="profile-storage-choice">Custom profiles</label>
+                <select id="profile-storage-choice" class="learn-select" data-storage-category="prof">
+                    <option value="auto">Automatic (internal, then SD)</option>
+                    <option value="internal">Internal flash</option>
+                    <option value="sd">SD card</option>
+                </select>
+                <button class="ctrl-btn" type="button" data-storage-save="prof" style="width:100%;min-height:42px;margin-top:8px;">Save Profile Storage</button>
+                <label for="recording-storage-choice">CAN recordings</label>
+                <select id="recording-storage-choice" class="learn-select" data-storage-category="rec">
+                    <option value="auto">Automatic (internal, then SD)</option>
+                    <option value="internal">Internal flash</option>
+                    <option value="sd">SD card</option>
+                </select>
+                <button class="ctrl-btn" type="button" data-storage-save="rec" style="width:100%;min-height:42px;margin-top:8px;">Save Recording Storage</button>
+                <label for="backup-storage-choice">Backup storage preference</label>
+                <select id="backup-storage-choice" class="learn-select" data-storage-category="bak">
+                    <option value="auto">Automatic (internal, then SD)</option>
+                    <option value="internal">Internal flash</option>
+                    <option value="sd">SD card</option>
+                </select>
+                <button class="ctrl-btn" type="button" data-storage-save="bak" style="width:100%;min-height:42px;margin-top:8px;">Save Backup Storage</button>
+                <button class="ctrl-btn" id="btn-storage-reset" type="button" style="width:100%;min-height:42px;margin-top:8px;">Reset All Storage Choices</button>
+                <p id="storage-manager-status" class="muted" aria-live="polite"></p>
+                <hr>
+                <h4>Assign DBC to a custom profile</h4>
+                <label for="dbc-profile-select">Custom profile</label>
+                <select id="dbc-profile-select" class="learn-select"></select>
+                <label for="dbc-profile-file">User DBC</label>
+                <select id="dbc-profile-file" class="learn-select">
+                    <option value="">No DBC</option>
+                </select>
+                <button class="ctrl-btn" id="btn-dbc-profile-save" style="width:100%;min-height:42px;margin-top:8px;">Save Profile DBC</button>
+                <hr>
+                <h4>Upload DBC</h4>
+                <input type="file" id="dbc-upload-file" accept=".dbc,.DBC,text/plain">
+                <button class="ctrl-btn" id="btn-dbc-upload" style="width:100%;min-height:42px;margin-top:8px;">Upload Selected DBC</button>
+                <p id="dbc-manager-status" class="muted" aria-live="polite">Loading DBC files…</p>
+                <div id="dbc-file-list" aria-live="polite"></div>
+            </div>
+            <div class="settings-group">
                 <h3>CAN Bus</h3>
                 <p id="can-info">Status: ---</p>
                 <p id="can-diagnostics" class="muted">CAN1 RX -- | TX -- | Errors -- | Bus --</p>

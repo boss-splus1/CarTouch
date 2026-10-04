@@ -18,6 +18,9 @@ struct CtDbcManifestEntry {
     uint32_t size;
     char     sha256[65];
     uint32_t messages;
+    char     time[24];
+    char     source[48];
+    char     license[48];
 };
 
 #define CT_DBC_MANIFEST_HEADER "{\"format\":1,\"files\":["
@@ -73,6 +76,18 @@ static inline bool ctDbcJsonUint(const char* line, const char* key, uint32_t& va
     return true;
 }
 
+static inline bool ctDbcJsonStrOptional(const char* line, const char* key,
+                                        const char* fallback, char* out, size_t outSize) {
+    char pattern[24];
+    int n = snprintf(pattern, sizeof(pattern), "\"%s\":", key);
+    if (n <= 0 || (size_t)n >= sizeof(pattern)) return false;
+    if (strstr(line, pattern)) return ctDbcJsonStr(line, key, out, outSize);
+    const size_t fallbackLength = strlen(fallback);
+    if (fallbackLength >= outSize) return false;
+    memcpy(out, fallback, fallbackLength + 1);
+    return true;
+}
+
 // One manifest line -> entry. False for header/footer lines and for anything invalid
 // (bad name, bad hash, zero size, missing field, truncated line).
 static inline bool ctDbcManifestParseLine(const char* line, CtDbcManifestEntry& e) {
@@ -84,6 +99,9 @@ static inline bool ctDbcManifestParseLine(const char* line, CtDbcManifestEntry& 
     if (!ctDbcJsonStr(line, "sha256", e.sha256, sizeof(e.sha256)) || !ctDbcIsHex64(e.sha256)) return false;
     if (!ctDbcJsonUint(line, "size", e.size) || e.size == 0) return false;
     if (!ctDbcJsonUint(line, "messages", e.messages)) return false;
+    if (!ctDbcJsonStrOptional(line, "time", "unknown", e.time, sizeof(e.time)) ||
+        !ctDbcJsonStrOptional(line, "source", "user", e.source, sizeof(e.source)) ||
+        !ctDbcJsonStrOptional(line, "license", "unverified", e.license, sizeof(e.license))) return false;
     const char* end = line + strlen(line);
     while (end > line && (end[-1] == '\n' || end[-1] == '\r' || end[-1] == ' ' || end[-1] == ',')) --end;
     return end > line && end[-1] == '}';    // line must be a complete object
@@ -94,9 +112,20 @@ static inline size_t ctDbcManifestFormatLine(const CtDbcManifestEntry& e, char* 
     if (!out || outSize == 0) return 0;
     out[0] = '\0';
     if (!ctDbcNameValid(e.name) || !ctDbcIsHex64(e.sha256) || e.size == 0) return 0;
+    const char* time = e.time[0] ? e.time : "unknown";
+    const char* source = e.source[0] ? e.source : "user";
+    const char* license = e.license[0] ? e.license : "unverified";
+    const char* metadata[] = { time, source, license };
+    for (size_t i = 0; i < sizeof(metadata) / sizeof(metadata[0]); ++i) {
+        for (const char* p = metadata[i]; *p; ++p) {
+            if (static_cast<unsigned char>(*p) < 0x20 || *p == '"' || *p == '\\') return 0;
+        }
+    }
     int n = snprintf(out, outSize,
-                     "{\"name\":\"%s\",\"size\":%lu,\"sha256\":\"%s\",\"messages\":%lu,\"source\":\"user\"}",
-                     e.name, (unsigned long)e.size, e.sha256, (unsigned long)e.messages);
+                     "{\"name\":\"%s\",\"size\":%lu,\"sha256\":\"%s\",\"messages\":%lu,"
+                     "\"time\":\"%s\",\"source\":\"%s\",\"license\":\"%s\"}",
+                     e.name, (unsigned long)e.size, e.sha256, (unsigned long)e.messages,
+                     time, source, license);
     if (n <= 0 || (size_t)n >= outSize) { out[0] = '\0'; return 0; }
     return (size_t)n;
 }

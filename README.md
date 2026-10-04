@@ -278,7 +278,7 @@ flowchart LR
 <details open>
 <summary><b>CAN2 (MCP2515)</b></summary>
 
-CAN2 از کریستال 8 MHz روی MCP2515 و ترنسیور TJA1050 و SPI مشترک با TFT/Touch استفاده می‌کند. CS و INT قابل تنظیم هستند و پیش‌فرض آن‌ها GPIO15 و GPIO16 است. زمین ماژول‌ها باید مشترک باشد.
+CAN2 از کریستال 8 MHz روی MCP2515 و ترنسیور TJA1050 و SPI مشترک با TFT/Touch استفاده می‌کند. SPI HAL در Arduino-ESP32 transactionهای هم‌زمان روی bus را با mutex داخلی سری می‌کند؛ هر کد task جدید باید انتقال SPI را با `beginTransaction()`/`endTransaction()` انجام دهد. CS و INT قابل تنظیم هستند و پیش‌فرض آن‌ها GPIO15 و GPIO16 است. زمین ماژول‌ها باید مشترک باشد.
 
 <div class="markdown-alert markdown-alert-caution" dir="rtl">
 <p class="markdown-alert-title">Caution</p>
@@ -306,14 +306,14 @@ pio run -e esp32-s3-devkitc-1 -t uploadfs     # آپلود filesystem (وب و D
 pio device monitor                            # مانیتور سریال
 ```
 
-<p class="markdown-alert markdown-alert-warning" dir="rtl"><b>هشدار:</b> فرمان دستی <code>uploadfs</code> کل SPIFFS را جایگزین می‌کند و می‌تواند پروفایل‌های یادگرفته‌شده و ضبط‌های CAN را پاک کند. پیش از اجرای آن از داده‌ها export و backup بگیرید؛ محافظ OTA وب تا وقتی فایل پروفایل یا ضبط CAN وجود دارد، جایگزینی filesystem را رد می‌کند.</p>
+<p class="markdown-alert markdown-alert-warning" dir="rtl"><b>هشدار:</b> فرمان دستی <code>uploadfs</code> کل SPIFFS را جایگزین می‌کند و می‌تواند پروفایل‌های یادگرفته‌شده، ضبط‌های CAN و DBCهای کاربر را پاک کند. قبل از اجرا داده‌ها را export کرده و در محل دیگری پشتیبان بگیرید. OTA وب تا وقتی پروفایل، ضبط CAN یا مانیفست/فایل بازیابی DBC کاربر در SPIFFS داخلی وجود دارد، جایگزینی را رد می‌کند؛ خود OTA پشتیبان خودکار نمی‌سازد.</p>
 
 <div class="markdown-alert markdown-alert-warning" dir="rtl">
 <p class="markdown-alert-title">محدودیت پیکربندی حافظه</p>
 <p>پروفایل اصلی <code>esp32-s3-devkitc-1</code> از برد N16R8 با فلش 16MB و PSRAM نوع OPI استفاده می‌کند. پروفایل‌های <code>esp32-s3-4mb</code> و <code>esp32-s3-4mb-psram</code> جدول واقعی 4MB و filesystem کوچک‌شده دارند؛ دومی برای PSRAM نوع QSPI است. firmware فعلی در هر دو پروفایل نزدیک به سقف 1.5MB هر OTA slot است، بنابراین تغییرات بزرگ بعدی ممکن است به جدول پارتیشن تازه نیاز داشته باشد.</p>
 </div>
 
-<p>در پروفایل 4MB فقط Web UI و 10 فایل DBC منطقه‌ای/وارداتی منتخب بسته‌بندی می‌شوند؛ مجموعه‌ی کامل 57 فایل در <code>data/dbc</code> دست‌نخورده می‌ماند و برای پروفایل 16MB است. فهرست خودرو در زمان اجرا فقط DBCهای موجود در filesystem را نشان می‌دهد. پروفایل‌های فعلی SPIFFS-only هستند؛ backend کارت SD و Five-way پیاده‌سازی نشده‌اند، چون رابط/پین معتبر SD و روش GPIO یا ADC و پین‌های Five-way در مرجع سخت‌افزاری این مخزن مشخص نشده‌اند. تنظیم پین نمایشگر در زمان اجرا و کنترلرهای TFT غیر از ILI9341 نیز پشتیبانی نمی‌شوند.</p>
+<p>در پروفایل 4MB فقط Web UI و 10 فایل DBC منطقه‌ای/وارداتی منتخب بسته‌بندی می‌شوند؛ مجموعه‌ی کامل 57 فایل در <code>data/dbc</code> دست‌نخورده می‌ماند و برای پروفایل 16MB است. فهرست خودرو در زمان اجرا فقط DBCهای موجود در filesystem را نشان می‌دهد. DBCهای کاربر و ضبط CAN از سیاست انتخاب SPIFFS/SD استفاده می‌کنند؛ پروفایل‌های سفارشی فعلاً فقط در SPIFFS ذخیره می‌شوند. SD پیش‌فرض غیرفعال است، خودکار format نمی‌شود و mount/removal آن روی سخت‌افزار هنوز نیازمند آزمون است. صفحه‌ی وب ترجیح مستقل DBC، پروفایل، ضبط و پشتیبان را ذخیره می‌کند، اما در حال حاضر فقط ترجیح DBC و ضبط به مسیر ذخیره‌سازی وصل است؛ ذخیره‌ی پروفایل روی SD و backup/restore واقعی موجود نیست. درایور اختیاری Five-way از GPIO یا ADC، تنظیم Serial و رویدادهای کوتاه/بلند را دارد و ورودی keypad را به LVGL می‌دهد؛ تنظیم از Web/BLE و آزمون عملی روی برد هنوز انجام نشده‌اند. تنظیم پین نمایشگر در زمان اجرا و کنترلرهای TFT غیر از ILI9341 نیز پشتیبانی نمی‌شوند.</p>
 
 <p>پروفایل <code>esp32-s3-headless</code> نمایشگر، تاچ و بافرهای LVGL را init/رزرو نمی‌کند؛ دسترسی شبکه و BLE مستقل می‌ماند و از جدول 16MB استفاده می‌کند. همه‌ی پروفایل‌های نمایش‌دار فعلی روی پین‌بندی ثابت ILI9341/XPT2046 در <code>platformio.ini</code> تنظیم شده‌اند.</p>
 
@@ -333,7 +333,7 @@ pio run -e esp32-s3-headless
 <details>
 <summary><b>فلش دستی با esptool</b></summary>
 
-پروفایل اصلی از جدول <code>cartouch_16MB.csv</code> استفاده می‌کند. پروفایل‌های 4MB از <code>cartouch_4MB.csv</code> و filesystem انتخابی ساخته‌شده از Web UI و DBCهای منطقه‌ای استفاده می‌کنند؛ فایل‌های اصلی در <code>data/</code> حذف یا تغییر نمی‌کنند. فضای SPIFFS چهارمگابایتی برای کل مجموعه‌ی DBC کافی نیست.
+پروفایل اصلی از جدول <code>cartouch_16MB.csv</code> استفاده می‌کند. پروفایل‌های 4MB از <code>cartouch_4MB.csv</code> و filesystem کوچک‌شده از Web UI و DBCهای منتخب استفاده می‌کنند؛ فایل‌های اصلی در <code>data/</code> حذف یا تغییر نمی‌کنند. فضای SPIFFS چهارمگابایتی برای کل مجموعه‌ی DBC کافی نیست. برای نقشه‌ی کامل پارتیشن‌ها و imageهای هر دو اندازه، <code>CarTouch_SPEC.md</code> بخش 18 را ببینید.
 
 آدرس فایل‌ها برای جدول 16MB:
 
@@ -348,12 +348,13 @@ pio run -e esp32-s3-headless
 <tr><td align="center"><code>firmware.bin</code></td><td align="center"><code>0x10000</code></td></tr>
 <tr><td align="center"><code>spiffs.bin</code></td><td align="center"><code>0xA10000</code></td></tr>
 </table>
+برای جدول 4MB، آدرس `spiffs.bin` برابر `0x310000` است؛ سایر imageهای سیستم در همان آدرس‌های جدول بالا قرار دارند. جدول و اندازه‌ی دقیق همه‌ی پارتیشن‌ها در بخش 18 مشخصات فنی آمده است. `boot_app0.bin` در `0xE000` داخل پارتیشن `otadata` نوشته می‌شود و پارتیشن جدا نیست.
 
 </details>
 
 <div class="markdown-alert markdown-alert-note" dir="rtl">
 <p class="markdown-alert-title">Note</p>
-<p>‏CI firmwareهای اصلی، headless و 4MB را می‌سازد و imageهای filesystem کامل و کوچک را بررسی می‌کند. محتوای کامل <code>data/</code> فقط در پروفایل 16MB قرار می‌گیرد؛ فایل‌های learned در زمان اجرا در SPIFFS هستند، بنابراین پیش از <code>uploadfs</code> دستی حتماً backup بگیرید.</p>
+<p>‏CI firmwareهای اصلی، headless و 4MB را می‌سازد و imageهای filesystem کامل و کوچک را بررسی می‌کند. محتوای کامل <code>data/</code> فقط در پروفایل 16MB قرار می‌گیرد؛ فایل‌های learned، ضبط‌های CAN و DBCهای کاربر ممکن است در زمان اجرا در SPIFFS باشند، بنابراین پیش از <code>uploadfs</code> دستی حتماً آن‌ها را export و در محل دیگری backup بگیرید.</p>
 </div>
 
 **بیلد خودکار:** workflow در `.github/workflows/main.yml` شامل build فریمویر و filesystem، static analysis، تست‌های native، بررسی اندازه‌ی SPIFFS و آپلود artifact است.
@@ -367,12 +368,12 @@ pio run -e esp32-s3-headless
 <td align="center"><b>نسخه</b></td>
 <td align="center"><b>کاربرد</b></td>
 </tr>
-<tr><td align="center">TFT_eSPI</td><td align="center">≥ 2.5.43</td><td align="center">درایور نمایشگر و تاچ</td></tr>
-<tr><td align="center">lvgl</td><td align="center">≥ 8.4.0</td><td align="center">رابط گرافیکی</td></tr>
-<tr><td align="center">ESPAsyncWebServer</td><td align="center">≥ 3.7.0</td><td align="center">وب‌سرور Async + OTA</td></tr>
-<tr><td align="center">AsyncTCP</td><td align="center">≥ 3.3.0</td><td align="center">TCP Async</td></tr>
-<tr><td align="center">ArduinoJson</td><td align="center">≥ 7.2.0</td><td align="center">کار با JSON</td></tr>
-<tr><td align="center">NimBLE-Arduino</td><td align="center">≥ 2.3.6</td><td align="center">BLE و BLE OTA</td></tr>
+<tr><td align="center">TFT_eSPI</td><td align="center">2.5.43</td><td align="center">درایور نمایشگر و تاچ</td></tr>
+<tr><td align="center">lvgl</td><td align="center">8.4.0</td><td align="center">رابط گرافیکی</td></tr>
+<tr><td align="center">ESPAsyncWebServer</td><td align="center">3.12.1</td><td align="center">وب‌سرور Async + OTA</td></tr>
+<tr><td align="center">AsyncTCP</td><td align="center">3.5.0</td><td align="center">TCP Async</td></tr>
+<tr><td align="center">ArduinoJson</td><td align="center">7.4.3</td><td align="center">کار با JSON</td></tr>
+<tr><td align="center">NimBLE-Arduino</td><td align="center">2.5.1</td><td align="center">BLE و BLE OTA</td></tr>
 <tr><td align="center">autowp-mcp2515</td><td align="center">≥ 1.3.1</td><td align="center">درایور MCP2515 برای CAN2</td></tr>
 </table>
 
@@ -422,6 +423,7 @@ flowchart TD
 - فرمان‌های Learn Mode ابتدا به‌صورت تأییدنشده ذخیره می‌شوند و ارسال فرمان آزمایشی فقط از مسیر تأیید صریح انجام می‌شود.
 - WebSocket بدون session token معتبر پذیرفته نمی‌شود.
 - تغییر رمز، نشست‌های قبلی را بی‌اعتبار می‌کند.
+- بدنه‌ی درخواست‌های HTTP پیش از parse سقف دارد؛ واردکردن پروفایل و بارگذاری DBC سقف‌های جداگانه دارند و بدنه‌های با طول نامشخص رد می‌شوند. OTA فایل به‌صورت تکه‌ای نوشته می‌شود و اندازه‌اش را محدودیت پارتیشن کنترل می‌کند.
 - OTA فقط از مسیر احراز هویت‌شده در دسترس است.
 - نبود HTTPS یعنی session و سایر داده‌های وب در شبکه‌ی محلی محرمانگی TLS ندارند.
 
@@ -430,7 +432,7 @@ flowchart TD
 <details>
 <summary><b>DBC</b></summary>
 
-فایل‌های DBC در <code>data/dbc/</code> داده‌ی ورودی سیستم هستند و metadata داخلی خودشان را حفظ می‌کنند. <code>VehicleDB</code> فقط فایل‌هایی را که برای انتخاب مستقیم مناسب تشخیص داده شده‌اند به فهرست خودروها متصل می‌کند؛ فایل‌های دیگر ممکن است برای merge چندمنبعی، ADAS/radar یا ساختارهای خاص نگهداری شده باشند.
+فایل‌های DBC در <code>data/dbc/</code> داده‌ی ورودی سیستم هستند و metadata داخلی خودشان را حفظ می‌کنند. <code>VehicleDB</code> فقط فایل‌هایی را که برای انتخاب مستقیم مناسب تشخیص داده شده‌اند به فهرست خودروها متصل می‌کند؛ فایل‌های دیگر ممکن است برای merge چندمنبعی، ADAS/radar یا ساختارهای خاص نگهداری شده باشند. صفحه‌ی Settings ترجیح مستقل محل DBC، پروفایل سفارشی، ضبط CAN و پشتیبان را نگه می‌دارد و Reset آن‌ها را به Automatic برمی‌گرداند؛ در وضعیت فعلی فقط ذخیره‌ی DBC و ضبط CAN از سیاست SPIFFS/SD استفاده می‌کنند. پروفایل سفارشی در SPIFFS می‌ماند و backup/restore واقعی هنوز پیاده‌سازی نشده است.
 
 </details>
 
@@ -442,9 +444,16 @@ flowchart TD
 </details>
 
 <details>
+<summary><b>اندازه‌گیری Heap و Stack</b></summary>
+
+از USB Serial با سرعت 115200، فرمان <code>memory</code> را برای مشاهده‌ی heap آزاد فعلی/کمینه‌ی زمان boot، بزرگ‌ترین بلوک قابل تخصیص، وضعیت PSRAM و high-water کمینه‌ی stack وظیفه‌ی اصلی <code>loop</code> اجرا کنید. برای سنجش، دستگاه را reboot کنید تا مقدارهای کمینه از boot تازه شروع شوند؛ سپس workloadهای سنگین و هم‌زمان (وب، ثبت CAN روی هر دو باس، انتخاب/بارگذاری DBC و BLE) را اجرا و خروجی را در طول آزمون ثبت کنید. این فرمان stack taskهای مستقل AsyncTCP/BLE را اندازه نمی‌گیرد و خروجی اجرای سخت‌افزاری باید جداگانه ثبت شود؛ مقدارهای build یا شبیه‌سازی جایگزین اندازه‌گیری روی برد نیستند.
+
+</details>
+
+<details>
 <summary><b>OTA و BLE</b></summary>
 
-OTA برای firmware و filesystem از Web UI فعال است. BLE مستقل از Wi-Fi اجرا می‌شود و status و BLE OTA دارد؛ کنترل مدیریتی BLE محدود به پروتکل تعریف‌شده است. نسخه‌ی firmware از <code>CAR_TOUCH_FIRMWARE_VERSION</code> در <code>src/config.h</code> می‌آید. پروتکل کامل در <a href="./BLE_OTA.md"><code>BLE_OTA.md</code></a>.
+OTA برای firmware و filesystem از Web UI فعال است و برای هر تصویر، SHA-256 مورد انتظار را از artifact همان build می‌گیرد؛ فایل‌های `.sha256` همراه firmware در خروجی CI هستند. BLE مستقل از Wi-Fi اجرا می‌شود و BLE OTA فقط پس از تطبیق اندازه و SHA-256 فعال می‌شود؛ قالب قدیمی `START` بدون هش پذیرفته نمی‌شود. Firmware روی slot غیرفعال نوشته می‌شود، اما rollback سلامت پس از اولین boot پیاده نشده؛ filesystem یک پارتیشن دارد و بازیابی خودکار در قطع برق ندارد. SHA-256 امضای دیجیتال نیست و ارتباط وب HTTPS ندارد. نسخه‌ی firmware از <code>CAR_TOUCH_FIRMWARE_VERSION</code> در <code>src/config.h</code> می‌آید. جزئیات در <a href="./BLE_OTA.md"><code>BLE_OTA.md</code></a>.
 
 </details>
 
@@ -461,6 +470,7 @@ CarTouch/
 ├── README.md                     # همین فایل
 ├── CarTouch_SPEC.md              # مشخصات فنی و معماری
 ├── BLE_OTA.md                    # پروتکل BLE و BLE OTA
+├── THIRD_PARTY_NOTICES.md        # مجوزها و منشأ وابستگی‌ها/داده‌ها
 ├── LICENSE
 ├── .github/workflows/            # بیلد خودکار در GitHub Actions
 ├── src/
@@ -509,6 +519,10 @@ CarTouch/
 <tr>
 <td align="center"><a href="./BLE_OTA.md"><code>BLE_OTA.md</code></a></td>
 <td align="center">پروتکل BLE و BLE OTA و نکات امنیتی آن</td>
+</tr>
+<tr>
+<td align="center"><a href="./THIRD_PARTY_NOTICES.md"><code>THIRD_PARTY_NOTICES.md</code></a></td>
+<td align="center">نسخه، منبع و مجوز وابستگی‌ها و وضعیت منشأ/مجوز DBCها</td>
 </tr>
 </table>
 

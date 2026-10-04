@@ -4,6 +4,8 @@
 #include <Update.h>
 #include "ct_password.h"
 #include "ct_ota_header.h"
+#include "ct_sha256.h"
+#include "ct_index_parser.h"
 #include "sd_storage.h"
 #include "config.h"
 #include "ct_can_record.h"
@@ -20,6 +22,9 @@ BLECharacteristic* gCommand = nullptr;
 BLECharacteristic* gData = nullptr;
 BLEServer* gServer = nullptr;
 CtOtaHeaderCheck gOtaHeader;    // header collected across BLE writes
+CtSha256 gOtaSha256;
+char gOtaExpectedSha256[65] = {};
+bool gOtaHashMismatch = false;
 BLEManager* gManager = nullptr;
 }
 
@@ -53,7 +58,7 @@ class BLEManager::CommandCallbacks : public NimBLECharacteristicCallbacks {
     void onWrite(NimBLECharacteristic* characteristic, NimBLEConnInfo& info) override {
         if (!gManager) return;
         const std::string value = characteristic->getValue();
-        if (value.size() > 96) {
+        if (value.size() > 128) {
             gManager->_sendStatus("COMMAND_TOO_LONG", info.getConnHandle());
             return;
         }
@@ -99,6 +104,8 @@ class BLEManager::DataCallbacks : public NimBLECharacteristicCallbacks {
         }
 
         gManager->_otaReceived += static_cast<uint32_t>(written);
+        ctSha256Update(gOtaSha256,
+                       reinterpret_cast<const uint8_t*>(value.data()), written);
         if (gStatus) {
             String status = "OTA_PROGRESS:" + String(gManager->_otaReceived) + ":" + String(gManager->_otaExpected);
             gStatus->notify(reinterpret_cast<const uint8_t*>(status.c_str()),
@@ -348,7 +355,9 @@ void BLEManager::_handleCommand(const String& command, uint16_t connHandle) {
             return;
         }
         if (!_finishOta()) {
-            _sendStatus("OTA_FINALIZE_ERROR", connHandle);
+            _sendStatus(gOtaHashMismatch ? "OTA_SHA256_MISMATCH" : "OTA_FINALIZE_ERROR",
+                        connHandle);
+            gOtaHashMismatch = false;
             return;
         }
         _sendStatus("OTA_OK_REBOOTING", connHandle);
@@ -358,24 +367,31 @@ void BLEManager::_handleCommand(const String& command, uint16_t connHandle) {
 
     if (cmd.length() >= 6 && cmd.substring(0, 6).equalsIgnoreCase("START:")) {   // keyword is case-insensitive; the password is not
         int first = cmd.indexOf(':');
-        int second = cmd.lastIndexOf(':');    // size is after the LAST ':' so passwords may contain ':'
-        if (second <= first) second = -1;
-        if (second < 0) {
+        const int hashSeparator = cmd.lastIndexOf(':');
+        const int sizeSeparator = hashSeparator > 0
+            ? cmd.lastIndexOf(':', hashSeparator - 1) : -1;
+        if (first < 0 || sizeSeparator <= first || hashSeparator <= sizeSeparator) {
             _sendStatus("OTA_BAD_COMMAND", connHandle);
             return;
         }
 
+        const String expectedHash = cmd.substring(hashSeparator + 1);
+        if (!ctSha256HexValid(expectedHash.c_str())) {
+            _sendStatus("OTA_BAD_SHA256", connHandle);
+            return;
+        }
         if (isUsingDefaultPassword()) {
             _sendStatus("OTA_CHANGE_DEFAULT_PASSWORD", connHandle);
             return;
         }
-        String password = cmd.substring(first + 1, second);
-        uint32_t size = static_cast<uint32_t>(cmd.substring(second + 1).toInt());
-        if (size == 0) {
+        String password = cmd.substring(first + 1, sizeSeparator);
+        const String sizeText = cmd.substring(sizeSeparator + 1, hashSeparator);
+        uint32_t size = 0;
+        if (!ctParseUnsignedDecimal(sizeText.c_str(), UINT32_MAX, size) || size == 0) {
             _sendStatus("OTA_BAD_SIZE", connHandle);
             return;
         }
-        if (!_startOta(size, password, connHandle)) {
+        if (!_startOta(size, password, expectedHash, connHandle)) {
             _sendStatus(_otaError ? "OTA_AUTH_OR_START_ERROR" : "OTA_START_ERROR", connHandle);
         } else {
             _sendStatus("OTA_STARTED", connHandle);
@@ -387,6 +403,7 @@ void BLEManager::_handleCommand(const String& command, uint16_t connHandle) {
 }
 
 bool BLEManager::_startOta(uint32_t size, const String& password,
+                           const String& expectedSha256,
                            uint16_t connHandle) {
     if (_otaInProgress && _otaConnHandle != connHandle) {
         _otaError = true;
@@ -396,8 +413,9 @@ bool BLEManager::_startOta(uint32_t size, const String& password,
     _otaAuthenticated = false;
     _otaExpected = 0;
     _otaReceived = 0;
+    gOtaHashMismatch = false;
 
-    AppConfig* cfg = getConfig();
+    const AppConfig* cfg = getConfig();
     if (isUsingDefaultPassword()) {    // never allow OTA with the public default
         _otaError = true;
         return false;
@@ -431,6 +449,9 @@ bool BLEManager::_startOta(uint32_t size, const String& password,
         return false;
     }
 
+    strncpy(gOtaExpectedSha256, expectedSha256.c_str(), sizeof(gOtaExpectedSha256) - 1);
+    gOtaExpectedSha256[sizeof(gOtaExpectedSha256) - 1] = '\0';
+    ctSha256Init(gOtaSha256);
     _otaExpected = size;
     _otaReceived = 0;
     _otaAuthenticated = true;
@@ -443,6 +464,8 @@ bool BLEManager::_startOta(uint32_t size, const String& password,
 void BLEManager::_abortOta() {
     if (Update.isRunning()) Update.abort();
     gOtaHeader.reset();
+    gOtaExpectedSha256[0] = '\0';
+    ctSha256Init(gOtaSha256);
     _otaInProgress = false;
     _otaAuthenticated = false;
     _otaExpected = 0;
@@ -465,6 +488,15 @@ bool BLEManager::_finishOta() {
         _abortOta();
         return false;
     }
+    char actualHash[65];
+    ctSha256FinishHex(gOtaSha256, actualHash);
+    if (!ctSha256HexEqual(actualHash, gOtaExpectedSha256)) {
+        Serial.println("[BLE OTA] SHA-256 mismatch");
+        _otaError = true;
+        gOtaHashMismatch = true;
+        _abortOta();
+        return false;
+    }
     if (!Update.end(true)) {
         Serial.printf("[BLE OTA] Finalize failed: %s\n", Update.errorString());
         _otaError = true;
@@ -475,6 +507,7 @@ bool BLEManager::_finishOta() {
     _otaInProgress = false;
     _otaAuthenticated = false;
     _otaConnHandle = BLE_HS_CONN_HANDLE_NONE;
+    gOtaExpectedSha256[0] = '\0';
     Serial.printf("[BLE OTA] Finished successfully: %u bytes\n", (unsigned)_otaReceived);
     return true;
 }

@@ -41,14 +41,16 @@ static inline CtStorageDecision ctResolveStorage(uint8_t choice,
     return d;
 }
 
-// GPIO acceptable as SD chip-select on ESP32-S3: conservative reserve list.
-// 0,3,45,46 strapping; 19,20 USB; 26-37 flash/PSRAM (35-37 only octal PSRAM,
-// reserved on all boards to stay safe). `inUse` lists pins already assigned.
+// GPIO acceptable for optional peripherals on ESP32-S3: conservative reserve
+// list. Exclude strapping, USB/UART, nonexistent GPIO22-25, and flash/PSRAM
+// pins; `inUse` lists pins already assigned by the selected board profile.
 static inline bool ctSdCsPinAllowed(int pin, const int* inUse, size_t inUseCount) {
     if (pin < 0 || pin > 48) return false;
     if (pin == 0 || pin == 3 || pin == 45 || pin == 46) return false;
     if (pin == 19 || pin == 20) return false;
+    if (pin >= 22 && pin <= 25) return false;
     if (pin >= 26 && pin <= 37) return false;
+    if (pin == 43 || pin == 44) return false;
     for (size_t i = 0; i < inUseCount; i++) if (inUse[i] == pin) return false;
     return true;
 }

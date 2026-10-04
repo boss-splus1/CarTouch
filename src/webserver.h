@@ -184,6 +184,7 @@ private:
     void _handleAPICanConfig(AsyncWebServerRequest* request);
     void _handleAPIStatus(AsyncWebServerRequest* request);
     void _handleNotFound(AsyncWebServerRequest* request);
+    void _registerDbcRoutes();
 
     // -- OTA update via web (/update) - behind the same authentication ------------
     void _handleOtaUpload(AsyncWebServerRequest* request, const String& filename,

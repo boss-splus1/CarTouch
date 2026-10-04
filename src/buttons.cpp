@@ -2,12 +2,13 @@
 #include <nvs.h>
 #include "config.h"
 #include "sd_storage.h"
+#include "ct_sync_policy.h"
 
 Buttons buttons;
 static const uint16_t ADC_TOL = 80;
 
 static void inUsePins(int* out, size_t& n) {
-    AppConfig* c = getConfig();
+    const AppConfig* c = getConfig();
     const int base[] = { PIN_TFT_CS, PIN_TFT_DC, PIN_TFT_RST, PIN_TFT_MOSI, PIN_TFT_SCLK, PIN_TFT_MISO,
                          PIN_TFT_BL, PIN_TOUCH_CS, c->canTxPin, c->canRxPin, c->can1CsPin, c->can1IntPin,
                          sdStorage.csPin() };
@@ -109,6 +110,11 @@ bool Buttons::setGpioPins(const int pins[5]) {
         if (!ctSdCsPinAllowed(pins[i], used, n)) return false;
         for (uint8_t j = i + 1; j < 5; j++) if (pins[i] == pins[j]) return false;
     }
+    // Cross-check against SD CS configuration
+    if (!ctSync().validateButtonsVsGivenSdCs(pins, sdStorage.csPin())) {
+        Serial.println("[BTN] GPIO pins conflict with SD CS pin configuration");
+        return false;
+    }
     int8_t oldPins[5]; memcpy(oldPins, _pins, 5); const Mode oldMode = _mode;
     for (uint8_t i = 0; i < 5; i++) _pins[i] = (int8_t)pins[i];
     _mode = GPIO_MODE;
@@ -124,6 +130,29 @@ bool Buttons::setAdc(int pin, const uint16_t ladder[5]) {
     const Mode oldMode = _mode;
     _adcPin = (int8_t)pin; memcpy(_ladder, ladder, sizeof(_ladder)); _mode = ADC_MODE;
     if (!_save()) { _adcPin = oldPin; memcpy(_ladder, oldLad, sizeof(_ladder)); _mode = oldMode; return false; }
+    _apply();
+    return true;
+}
+
+bool Buttons::resetToDefaults() {
+    const Mode oldMode = _mode;
+    int8_t oldPins[5];
+    const int8_t oldAdcPin = _adcPin;
+    uint16_t oldLadder[5];
+    memcpy(oldPins, _pins, sizeof(oldPins));
+    memcpy(oldLadder, _ladder, sizeof(oldLadder));
+
+    _mode = OFF;
+    memset(_pins, -1, sizeof(_pins));
+    _adcPin = -1;
+    memset(_ladder, 0, sizeof(_ladder));
+    if (!_save()) {
+        _mode = oldMode;
+        memcpy(_pins, oldPins, sizeof(_pins));
+        _adcPin = oldAdcPin;
+        memcpy(_ladder, oldLadder, sizeof(_ladder));
+        return false;
+    }
     _apply();
     return true;
 }

@@ -11,7 +11,7 @@ typedef void (*BLECommandCallback)(const char* command);
  *
  * The BLE OTA protocol is intentionally simple so it can be used by a
  * generic GATT client (for example nRF Connect or a dedicated mobile app):
- *   1) write "START:<password>:<firmware_size>" to the command characteristic
+ *   1) write "START:<password>:<firmware_size>:<sha256>" to the command characteristic
  *   2) write raw firmware bytes to the data characteristic
  *   3) write "END" to the command characteristic
  *   4) device validates the Update object and reboots after success
@@ -53,7 +53,8 @@ private:
 
     void _sendStatus(const char* status, uint16_t connHandle);
     void _handleCommand(const String& command, uint16_t connHandle);
-    bool _startOta(uint32_t size, const String& password, uint16_t connHandle);
+    bool _startOta(uint32_t size, const String& password,
+                   const String& expectedSha256, uint16_t connHandle);
     void _abortOta();
     bool _finishOta();
     bool _authenticateCommand(const String& password, uint16_t connHandle);

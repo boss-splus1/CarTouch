@@ -131,7 +131,7 @@ bool CANManager::_stopAndUninstall() {
 
 bool CANManager::begin() {
     // Load persisted CAN GPIO mapping before installing TWAI.
-    AppConfig* cfg = getConfig();
+    const AppConfig* cfg = getConfig();
     if (validateCanPins(cfg->canTxPin, cfg->canRxPin)) {
         _txPin = cfg->canTxPin;
         _rxPin = cfg->canRxPin;

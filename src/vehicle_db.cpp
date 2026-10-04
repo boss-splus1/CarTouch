@@ -7,6 +7,7 @@
 
 #include "vehicle_db.h"
 #include "ct_dbc_validation.h"
+#include "dbc_store.h"
 #include <FS.h>
 #include <SPIFFS.h>
 #include <cstring>
@@ -156,19 +157,19 @@ void VehicleDB::begin() {
     // DBC architecture.
 
     uint8_t availableCount = 0;
-    for (uint8_t index = 0; index < i; ++index) {
-        const VehicleProfile& candidate = _vehicleList[index];
+    for (uint8_t sourceIndex = 0; sourceIndex < i; ++sourceIndex) {
+        const VehicleProfile& candidate = _vehicleList[sourceIndex];
         if (candidate.dbcFileName[0] != '\0' && !SPIFFS.exists(candidate.dbcFileName)) {
             Serial.printf("[DB] Hiding unavailable DBC profile: %s\n", candidate.dbcFileName);
             continue;
         }
-        if (availableCount != index) _vehicleList[availableCount] = candidate;
+        if (availableCount != sourceIndex) _vehicleList[availableCount] = candidate;
         ++availableCount;
     }
     _vehicleCount = availableCount;
     _initialized  = true;
 
-    AppConfig* cfg = getConfig();
+    const AppConfig* cfg = getConfig();
     setActiveVehicle(cfg->vehicleBrand, cfg->vehicleModel, true);
 
     Serial.printf("[DB] VehicleDB ready - %d models\n", _vehicleCount);
@@ -189,20 +190,33 @@ bool VehicleDB::loadDBCFile(const char* filename) {
         return true;
     }
 
-    // Any failure below must leave an EMPTY message table, never the previous
-    // vehicle's messages (they would otherwise be sent for the new vehicle).
-    if (!SPIFFS.exists(filename)) {
-        Serial.printf("[DB] DBC file not found: %s\n", filename);
+    // User DBCs must be found in their manifest and pass integrity validation
+    // before parsing. Built-in DBCs keep their existing SPIFFS loading path.
+    const char* name = strrchr(filename, '/');
+    name = name ? name + 1 : filename;
+    File file;
+    CtStorageLoc userLocation = CT_LOC_NONE;
+    bool isUserFile = false;
+    if (!dbcStore.openVerifiedUserFile(name, file, userLocation, isUserFile)) {
+        Serial.printf("[DB] User DBC rejected: %s (%s)\n",
+                      filename, dbcStore.errorText());
         return false;
     }
-
-    File file = SPIFFS.open(filename, "r");
-    if (!file) {
-        Serial.printf("[DB] Failed to open file: %s\n", filename);
-        return false;
+    if (!isUserFile) {
+        if (!SPIFFS.exists(filename)) {
+            Serial.printf("[DB] DBC file not found: %s\n", filename);
+            return false;
+        }
+        file = SPIFFS.open(filename, "r");
+        if (!file) {
+            Serial.printf("[DB] Failed to open file: %s\n", filename);
+            return false;
+        }
     }
 
-    Serial.printf("[DB] Loading DBC: %s\n", filename);
+    Serial.printf("[DB] Loading DBC: %s%s\n", filename,
+                  isUserFile ? (userLocation == CT_LOC_SD ? " (SD, verified)" :
+                                " (SPIFFS, verified)") : "");
 
     // DBC value/comment lines can be very long, and some real SG_ lines are
     // longer than 127 bytes. Use a heap-backed buffer so a valid signal line
@@ -332,7 +346,6 @@ bool VehicleDB::_parseSignalLine(const char* line) {
     }
 
     DbcMessage* msg = &_messages[_messageCount - 1];
-    if (!msg) return false;
 
     DbcSignal parsedSignal;
     DbcSignal* sig = &parsedSignal;
@@ -494,7 +507,6 @@ float VehicleDB::extractSignalValue(const DbcSignal& signal, const uint8_t* data
     // Defensive clamp: the parser already enforces 1..64, but this is a
     // public entry point so keep every shift width valid regardless.
     uint8_t  totalBits = (signal.length > 64) ? 64 : signal.length;
-    if (totalBits == 0) return 0.0f;
 
     // i=0 maps to bit 0 of rawValue for Intel (already the LSB), and to
     // the top bit (totalBits-1) for Motorola (where i=0 is the MSB) -

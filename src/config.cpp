@@ -8,6 +8,7 @@
 #include "config.h"
 #include "ct_password.h"
 #include "sd_storage.h"
+#include "buttons.h"
 #include <esp_random.h>
 #include "ct_can_config.h"
 #include "ct_listen_override.h"
@@ -300,7 +301,7 @@ AppConfig* getConfig() {
 // ■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
 
 bool isUsingDefaultPassword() {
-    AppConfig* cfg = getConfig();
+    const AppConfig* cfg = getConfig();
     if (cfg->forcePasswordChange) return true;
     if (strcmp(cfg->webPass, WEB_DEFAULT_PASS) == 0) return true;
     return false;
@@ -362,6 +363,9 @@ void setDefaultConfig() {
     // touch wizard is offered again.
     setTouchCalibrationSkipped(false);
     resetStorageChoices();   // storage choices back to AUTO (SD CS pin is kept)
+    if (!buttons.resetToDefaults()) {
+        Serial.println("[NVS] Button defaults reset failed");
+    }
     if (saveConfig()) {
         configLoaded = true;
     }

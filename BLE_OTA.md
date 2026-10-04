@@ -27,13 +27,13 @@ BLE device commands are a bounded subset; they do not provide raw CAN transmissi
 
 ## OTA sequence
 1. Connect to the device.
-2. Send `START:<web-password>:<firmware-size>` (the size is always taken after the last `:`, so the password may contain `:`).
+2. Obtain the SHA-256 digest for the exact `firmware.bin` from its matching `firmware.bin.sha256` file in the same trusted firmware artifact. Send `START:<web-password>:<firmware-size>:<sha256>` to Command. The digest is 64 hexadecimal characters; the size and digest are parsed from the end, so the password may contain `:`.
 3. Wait for `OTA_STARTED`.
 4. Write firmware bytes to Data.
 5. Send `END`.
-6. The device verifies size, finalizes the image and reboots.
+6. The device verifies the exact byte count and SHA-256 before finalizing the image and rebooting. A mismatch returns `OTA_SHA256_MISMATCH` and leaves the new app slot unactivated.
 
-`ABORT` cancels a transfer; disconnecting also aborts an active OTA.
+The old `START:<web-password>:<firmware-size>` form is rejected. `ABORT` cancels a transfer; disconnecting also aborts an active OTA.
 
 ## Security
 BLE link security is enabled. BLE OTA requires the current Web password in `START`; device commands require a separate `AUTH` using that password. Do not expose the password over an untrusted BLE environment.
@@ -45,4 +45,13 @@ The authenticated Web UI remains the full configuration surface.
 - OTA is refused while the default web password is still in use (`OTA_CHANGE_DEFAULT_PASSWORD`).
 - 5 wrong passwords lock BLE OTA for 60 seconds.
 - The image header is checked while data arrives: `OTA_BAD_HEADER` (not an ESP image), `OTA_WRONG_CHIP` (not built for the ESP32-S3) and `OTA_WRONG_FLASH_SIZE` (built for more flash than the device has, for example a 16 MB image sent to a 4 MB board). The transfer is aborted and the running firmware is untouched.
+- SHA-256 is computed incrementally as bytes arrive. It detects a transfer/file mismatch against the supplied digest; it is not a digital signature and does not prove who built the image. Use a checksum from the same trusted release artifact.
 - Pairing uses Just Works (no passkey, no MITM protection). The link is encrypted, but an attacker present during first pairing could impersonate the device or the phone and capture the OTA password. Pair only in a trusted place, and change the Web password if pairing may have been observed.
+
+## Power-loss behavior and limits
+
+Firmware OTA writes the inactive app slot. The updater keeps its boot magic unset until finalization, then selects the new slot only after the full image and digest have been accepted. A power loss during transfer should therefore leave the currently selected app slot intact. This is not a boot-health rollback: if the new image is accepted and then fails after boot, the firmware does not automatically mark itself valid or roll back.
+
+Filesystem OTA writes the single SPIFFS partition in place; it has no second filesystem slot. A power loss or digest mismatch during that update can leave SPIFFS unusable. Web OTA blocks the operation when it detects protected internal user data, but there is no automatic filesystem restore; the embedded OTA page can be used to retry a filesystem upload if the firmware itself still boots. Manual `uploadfs` bypasses that web guard.
+
+SHA-256 only detects mismatch with the supplied digest. Web OTA uses HTTP without TLS, and BLE pairing is Just Works, so the digest does not authenticate a release against an active attacker. Use a trusted artifact and a trusted local connection.

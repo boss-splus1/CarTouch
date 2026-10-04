@@ -5,6 +5,7 @@
 #include "active_profile_manager.h"
 #include "custom_vehicle.h"
 #include "ct_tx_guard.h"
+#include "ct_dbc_store.h"
 
 // ■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
 // □□□□□□□□□□ Constructor
@@ -37,16 +38,67 @@ bool ActiveProfileManager::selectDBCVehicle(const char* brand, const char* model
 // ■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
 
 bool ActiveProfileManager::selectCustomVehicle(uint8_t profileIndex) {
-    CustomVehicleProfile summary;
-    if (!_customStore.getProfileSummary(profileIndex, summary)) {
+    CustomVehicleProfile profile;
+    if (!_customStore.loadProfile(profileIndex, profile)) {
         Serial.printf("[APM] Custom profile %d not found\n", profileIndex);
+        return false;
+    }
+
+    const ActiveVehicleKind previousKind = _activeKind;
+    const uint8_t previousCustomIndex = _activeCustomIndex;
+    char previousBrand[32] = {};
+    char previousModel[32] = {};
+    if (previousKind == ACTIVE_KIND_DBC) {
+        _vehicleDB.getActiveVehicle(previousBrand, previousModel, sizeof(previousBrand));
+    }
+
+    if (profile.dbcFileName[0]) {
+        char path[sizeof(CT_DBC_DIR) + CT_DBC_NAME_MAX];
+        if (!ctDbcBuildPath(profile.dbcFileName, path, sizeof(path))) {
+            Serial.printf("[APM] Custom profile %d DBC could not be loaded\n", profileIndex);
+            return false;
+        }
+        if (!_vehicleDB.loadDBCFile(path)) {
+            bool restored = false;
+            if (previousKind == ACTIVE_KIND_DBC) {
+                restored = _vehicleDB.setActiveVehicle(previousBrand, previousModel);
+            } else if (previousKind == ACTIVE_KIND_CUSTOM) {
+                CustomVehicleProfile previousProfile;
+                if (_customStore.loadProfile(previousCustomIndex, previousProfile)) {
+                    if (previousProfile.dbcFileName[0]) {
+                        char previousPath[sizeof(CT_DBC_DIR) + CT_DBC_NAME_MAX];
+                        restored = ctDbcBuildPath(previousProfile.dbcFileName, previousPath,
+                                                  sizeof(previousPath)) &&
+                                   _vehicleDB.loadDBCFile(previousPath);
+                    } else {
+                        restored = _vehicleDB.loadDBCFile("");
+                    }
+                }
+            } else {
+                restored = _vehicleDB.loadDBCFile("");
+            }
+            if (!restored) {
+                _activeKind = ACTIVE_KIND_NONE;
+                Serial.println("[APM] ERROR: failed to restore prior DBC after custom profile load failure");
+            }
+            Serial.printf("[APM] Custom profile %d DBC could not be loaded\n", profileIndex);
+            return false;
+        }
+    } else if (!_vehicleDB.loadDBCFile("")) {
         return false;
     }
 
     _activeCustomIndex = profileIndex;
     _activeKind            = ACTIVE_KIND_CUSTOM;
-    Serial.printf("[APM] Active vehicle (custom): %s\n", summary.name);
+    Serial.printf("[APM] Active vehicle (custom): %s\n", profile.name);
     return true;
+}
+
+bool ActiveProfileManager::activeProfileUsesDbc(const char* fileName) {
+    if (!fileName || _activeKind != ACTIVE_KIND_CUSTOM) return false;
+    CustomVehicleProfile profile;
+    return _customStore.loadProfile(_activeCustomIndex, profile) &&
+           strcmp(profile.dbcFileName, fileName) == 0;
 }
 
 // ■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■

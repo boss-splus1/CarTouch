@@ -24,6 +24,7 @@
 
 #include <Arduino.h>
 #include "config.h"
+#include "ct_dbc_store.h"
 
 // ■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
 // □□□□□□□□□□ Sizing
@@ -113,6 +114,7 @@ struct CustomVehicleProfile {
     char      name[32]               = {0};              // User-chosen name, e.g. "Dad's Pride"
     char       brand[24]                 = {0};
     char        model[24]                    = {0};
+    char        dbcFileName[CT_DBC_NAME_MAX + 1] = {0};
     uint16_t     year                            = 0;
     uint32_t     revision                       = 0; // monotonically changes on every persisted profile mutation
 

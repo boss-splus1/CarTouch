@@ -22,6 +22,7 @@ public:
     bool setOff();
     bool setGpioPins(const int pins[5]);
     bool setAdc(int pin, const uint16_t ladder[5]);
+    bool resetToDefaults();
 private:
     void _apply();
     bool _save();
