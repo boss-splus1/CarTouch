@@ -255,6 +255,11 @@ jobs:
           set -o pipefail
           python3 scripts/check_tx_paths.py src 2>&1 | tee report/check_tx_paths.txt
 
+      - name: Check DBC limits match the loader
+        run: |
+          set -o pipefail
+          python3 scripts/check_dbc_limits.py . 2>&1 | tee report/check_dbc_limits.txt
+
       - name: Audit DBC files (duplicates, duplicate ids)
         run: |
           set -o pipefail
