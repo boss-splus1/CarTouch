@@ -17,6 +17,7 @@
 #include "active_profile_manager.h"
 #include "vehicle_control.h"
 #include "ct_battery.h"
+#include "ct_obd_validity.h"
 #include <TFT_eSPI.h>
 #include <esp_task_wdt.h>
 #include <freertos/FreeRTOS.h>
@@ -1707,25 +1708,28 @@ void TFT_UI::updateVehicleData(const VehicleData& data) {
 
     if (_labelSpeed) {
         char buf[32];
-        snprintf(buf, sizeof(buf), "%d km/h", data.vehicleSpeed);
+        if (ctVdValid(data.validMask, CT_VD_SPEED)) snprintf(buf, sizeof(buf), "%d km/h", data.vehicleSpeed);
+        else snprintf(buf, sizeof(buf), "-- km/h");
         lv_label_set_text(_labelSpeed, buf);
     }
 
     if (_labelRPM) {
         char buf[32];
-        snprintf(buf, sizeof(buf), "RPM: %d", data.engineRPM);
+        if (ctVdValid(data.validMask, CT_VD_RPM)) snprintf(buf, sizeof(buf), "RPM: %d", data.engineRPM);
+        else snprintf(buf, sizeof(buf), "RPM: --");
         lv_label_set_text(_labelRPM, buf);
     }
 
     if (_labelTemp) {
         char buf[32];
-        snprintf(buf, sizeof(buf), "Engine Temp: %d°C", data.coolantTemp);
+        if (ctVdValid(data.validMask, CT_VD_COOLANT)) snprintf(buf, sizeof(buf), "Engine Temp: %d°C", data.coolantTemp);
+        else snprintf(buf, sizeof(buf), "Engine Temp: --");
         lv_label_set_text(_labelTemp, buf);
     }
 
     if (_labelVolt) {
         char buf[32];
-        if (ctBatteryVoltageAvailable(data.batteryVoltage)) {
+        if (ctVdValid(data.validMask, CT_VD_BATTERY) && ctBatteryVoltageAvailable(data.batteryVoltage)) {
             snprintf(buf, sizeof(buf), "Battery: %.1f V", data.batteryVoltage);
         } else {
             snprintf(buf, sizeof(buf), "Battery: N/A");
@@ -1735,7 +1739,8 @@ void TFT_UI::updateVehicleData(const VehicleData& data) {
 
     if (_labelFuel) {
         char buf[32];
-        snprintf(buf, sizeof(buf), "Fuel: %d%%", data.fuelLevel);
+        if (ctVdValid(data.validMask, CT_VD_FUEL)) snprintf(buf, sizeof(buf), "Fuel: %d%%", data.fuelLevel);
+        else snprintf(buf, sizeof(buf), "Fuel: --");
         lv_label_set_text(_labelFuel, buf);
     }
 }

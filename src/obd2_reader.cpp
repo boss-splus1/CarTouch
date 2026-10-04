@@ -7,6 +7,7 @@
 #include "obd2_reader.h"
 #include "ct_obd_parser.h"
 #include "ct_time.h"
+#include "ct_obd_validity.h"
 
 // ■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
 // □□□□□□□□□□ OBD-II constants
@@ -37,6 +38,7 @@ OBD2Reader::OBD2Reader(CANService& canService)
     _pollIndex          = 0;
     _pollWaitStartMs     = 0;
     _hasCompletedRound   = false;
+    for (uint8_t i = 0; i < _POLL_PID_COUNT; ++i) { _lastAnswerMs[i] = 0; _everAnswered[i] = false; }
     _pollIntervalMs       = 200;            // Spacing between completed rounds
     _lastRoundStartMs      = 0;
     _diagnosticState = OBD_DIAG_IDLE;
@@ -57,6 +59,7 @@ bool OBD2Reader::setCanBus(CanBusId bus) {
     _pollState = OBD_POLL_IDLE;
     _pollIndex = 0;
     _hasCompletedRound = false;
+    for (uint8_t i = 0; i < _POLL_PID_COUNT; ++i) _everAnswered[i] = false;
     if (_rxSubscribed) _can.subscribeRx(_bus, CAN_RX_OBD);
     return true;
 }
@@ -374,6 +377,8 @@ void OBD2Reader::_pollCheckResponse() {
         resp.timestamp = millis();
         memcpy(resp.data, &reply.data[parsed.dataOffset], dataLength);
         _applyPidToData(pid, resp, _pendingData);
+        _lastAnswerMs[_pollIndex] = millis();
+        _everAnswered[_pollIndex] = true;
 
         _pollIndex++;
         _pollState = (_pollIndex >= _POLL_PID_COUNT) ? OBD_POLL_DONE : OBD_POLL_SENDING;
@@ -430,6 +435,19 @@ void OBD2Reader::update() {
             _latestData.fuelLevel        = _pendingData.fuelLevel;
             _latestData.engineRuntime     = _pendingData.engineRuntime;
             _latestData.batteryVoltage     = _pendingData.batteryVoltage;
+            {
+                // Same order as OBD_POLL_PID_TABLE.
+                static const uint8_t bits[7] = { CT_VD_RPM, CT_VD_SPEED, CT_VD_COOLANT,
+                                                 CT_VD_THROTTLE, CT_VD_FUEL, CT_VD_RUNTIME,
+                                                 CT_VD_BATTERY };
+                uint8_t mask = 0;
+                for (uint8_t i = 0; i < _POLL_PID_COUNT; ++i) {
+                    if (ctObdValueFresh(_everAnswered[i], _lastAnswerMs[i], now, CT_OBD_STALE_MS)) {
+                        mask |= bits[i];
+                    }
+                }
+                _latestData.validMask = mask;
+            }
             _hasCompletedRound = true;
             _pollState = OBD_POLL_IDLE;
             break;
@@ -445,6 +463,7 @@ bool OBD2Reader::getLatestData(VehicleData& outData) {
     outData.fuelLevel        = _latestData.fuelLevel;
     outData.engineRuntime     = _latestData.engineRuntime;
     outData.batteryVoltage     = _latestData.batteryVoltage;
+    outData.validMask          = _latestData.validMask;
     return true;
 }
 

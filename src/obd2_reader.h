@@ -157,6 +157,8 @@ private:
     VehicleData  _pendingData;                   // Data being assembled this round
     VehicleData  _latestData;                    // Most recently completed round
     bool         _hasCompletedRound;
+    uint32_t     _lastAnswerMs[7];               // Last time the ECU answered each polled PID
+    bool         _everAnswered[7];
     uint32_t     _pollIntervalMs;                // Spacing between rounds (not between PIDs)
     uint32_t     _lastRoundStartMs;
 

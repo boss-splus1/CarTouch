@@ -26,6 +26,7 @@
 #include "ct_hex_parser.h"
 #include "ct_index_parser.h"
 #include "ct_battery.h"
+#include "ct_obd_validity.h"
 #include "ct_can_record.h"
 
 static bool parseHexUint32(const char* text, uint32_t& value, size_t maxDigits) {
@@ -2203,16 +2204,18 @@ String WebServerManager::_vehicleDataToJSON(const VehicleData& data) {
     JsonDocument doc;
 
     doc["type"]           = "vehicle_data";
-    doc["speed"]              = data.vehicleSpeed;
-    doc["rpm"]                    = data.engineRPM;
-    doc["coolantTemp"]                = data.coolantTemp;
-    if (ctBatteryVoltageAvailable(data.batteryVoltage)) {
+    // A value the ECU did not answer (or answered long ago) is sent as null,
+    // never as a made-up number. Field names are unchanged.
+    if (ctVdValid(data.validMask, CT_VD_SPEED))    doc["speed"] = data.vehicleSpeed;    else doc["speed"] = nullptr;
+    if (ctVdValid(data.validMask, CT_VD_RPM))      doc["rpm"] = data.engineRPM;         else doc["rpm"] = nullptr;
+    if (ctVdValid(data.validMask, CT_VD_COOLANT))  doc["coolantTemp"] = data.coolantTemp; else doc["coolantTemp"] = nullptr;
+    if (ctVdValid(data.validMask, CT_VD_BATTERY) && ctBatteryVoltageAvailable(data.batteryVoltage)) {
         doc["battery"] = data.batteryVoltage;
     } else {
         doc["battery"] = nullptr;
     }
-    doc["fuel"]                              = data.fuelLevel;
-    doc["throttle"]                              = data.throttlePos;
+    if (ctVdValid(data.validMask, CT_VD_FUEL))     doc["fuel"] = data.fuelLevel;        else doc["fuel"] = nullptr;
+    if (ctVdValid(data.validMask, CT_VD_THROTTLE)) doc["throttle"] = data.throttlePos;  else doc["throttle"] = nullptr;
 
     doc["doorFL"]   = (int)data.doorFL;
     doc["doorFR"]      = (int)data.doorFR;

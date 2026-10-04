@@ -181,6 +181,7 @@ struct VehicleData {
     uint8_t  throttlePos    = 0;       // %
     uint8_t  fuelLevel      = 0;       // %
     uint16_t engineRuntime  = 0;       // seconds
+    uint8_t  validMask      = 0;       // CT_VD_* bits: which values the ECU really answered (see ct_obd_validity.h)
 
     // Doors
     DoorLockState doorFL     = LOCK_UNKNOWN;
