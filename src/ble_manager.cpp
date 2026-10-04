@@ -112,7 +112,6 @@ BLEManager bleManager;
 BLEManager::BLEManager()
     : _started(false), _connected(false), _otaInProgress(false),
       _otaAuthenticated(false), _otaError(false), _commandAuthenticated(false),
-    _commandFailCount(0), _commandLockUntil(0),
     _otaConnHandle(BLE_HS_CONN_HANDLE_NONE),
     _commandConnHandle(BLE_HS_CONN_HANDLE_NONE), _hasDeviceCommand(false),
     _lastDeviceCommandMs(0), _otaExpected(0),
@@ -183,11 +182,7 @@ void BLEManager::_sendStatus(const char* status, uint16_t connHandle) {
 
 bool BLEManager::_authenticateCommand(const String& password, uint16_t connHandle) {
     if (isUsingDefaultPassword()) return false;
-    if (_commandLockUntil != 0 && (int32_t)(millis() - _commandLockUntil) < 0) return false;
-    if (_commandLockUntil != 0) {
-        _commandLockUntil = 0;
-        _commandFailCount = 0;
-    }
+    if (ctLoginLocked(_authLock, millis())) return false;
 
     const char* expected = getConfig()->webPass;
     const size_t expectedLength = strlen(expected);
@@ -199,16 +194,11 @@ bool BLEManager::_authenticateCommand(const String& password, uint16_t connHandl
     if (diff == 0) {
         _commandAuthenticated = true;
         _commandConnHandle = connHandle;
-        _commandFailCount = 0;
-        _commandLockUntil = 0;
+        ctLoginSucceeded(_authLock);
         return true;
     }
 
-    if (++_commandFailCount >= 5) {
-        _commandFailCount = 0;
-        _commandLockUntil = millis() + 60000;
-        if (_commandLockUntil == 0) _commandLockUntil = 1;
-    }
+    ctLoginFailed(_authLock, millis());
     return false;
 }
 
@@ -224,7 +214,7 @@ void BLEManager::_handleCommand(const String& command, uint16_t connHandle) {
 
     if (cmd.startsWith("AUTH:")) {
         if (_authenticateCommand(cmd.substring(5), connHandle)) _sendStatus("COMMAND_AUTHENTICATED", connHandle);
-        else _sendStatus(_commandLockUntil ? "COMMAND_LOCKED" : "COMMAND_AUTH_FAILED", connHandle);
+        else _sendStatus(ctLoginLocked(_authLock, millis()) ? "COMMAND_LOCKED" : "COMMAND_AUTH_FAILED", connHandle);
         return;
     }
 
@@ -412,7 +402,7 @@ bool BLEManager::_startOta(uint32_t size, const String& password,
         _otaError = true;
         return false;
     }
-    if (_otaLockUntil != 0 && (int32_t)(millis() - _otaLockUntil) < 0) {
+    if (ctLoginLocked(_authLock, millis())) {
         _otaError = true;    // locked out after repeated failures
         return false;
     }
@@ -424,15 +414,10 @@ bool BLEManager::_startOta(uint32_t size, const String& password,
         for (size_t i = 0; i < el; ++i) diff |= (uint8_t)(expected[i] ^ (i < pl ? password[i] : 0));
         if (diff != 0) {
             _otaError = true;
-            if (++_otaFailCount >= 5) {
-                _otaFailCount = 0;
-                _otaLockUntil = millis() + 60000;
-                if (_otaLockUntil == 0) _otaLockUntil = 1;
-            }
+            ctLoginFailed(_authLock, millis());
             return false;
         }
-        _otaFailCount = 0;
-        _otaLockUntil = 0;
+        ctLoginSucceeded(_authLock);
     }
 
     if (_otaInProgress || Update.isRunning()) {

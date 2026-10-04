@@ -2,6 +2,7 @@
 #define BLE_MANAGER_H
 
 #include <Arduino.h>
+#include "ct_login_lock.h"
 
 typedef void (*BLECommandCallback)(const char* command);
 
@@ -39,10 +40,7 @@ private:
     bool _otaAuthenticated;
     bool _otaError;
     bool _commandAuthenticated;
-    uint8_t  _otaFailCount = 0;
-    uint32_t _otaLockUntil = 0;
-    uint8_t _commandFailCount;
-    uint32_t _commandLockUntil;
+    CtLoginLock _authLock;    // shared by command login and OTA start
     uint16_t _otaConnHandle;
     uint16_t _commandConnHandle;
     bool _hasDeviceCommand;
